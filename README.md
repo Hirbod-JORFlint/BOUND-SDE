@@ -1,166 +1,102 @@
-# BOUND-SDE
-a unified framework for constrained trait evolution on phylogenetic trees
-\section*{Overview}
+# BOUND-SDE  
+## A JAX-Native Framework for Constrained Trait Evolution on Phylogenetic Trees
 
-\textbf{BOUND-SDE} is a high-performance computational framework for modeling trait evolution on phylogenetic trees under stochastic differential equations (SDEs) with hard constraints. The system is implemented in a fully vectorized, differentiable manner using JAX, enabling efficient likelihood computation, gradient-based parameter estimation, and forward simulation.
+BOUND-SDE is a high-performance, fully differentiable framework for modeling constrained stochastic trait evolution on phylogenetic trees. It implements Stochastic Differential Equations (SDEs) with reflective boundaries and Riemannian manifold constraints, enabling rigorous likelihood-based inference for bounded or geometrically structured traits.
 
-The framework supports:
-\begin{itemize}
-    \item Reflecting boundary conditions on compact intervals $[L,U]$.
-    \item Diffusions on Riemannian manifolds, specifically:
-    \begin{itemize}
-        \item The circle $S^1$.
-        \item The probability simplex $\Delta^d$.
-    \end{itemize}
-    \item Spectral transition approximations for efficient likelihood computation.
-    \item A Boundary-Propagating Pruning (BPP) algorithm for recursive tree likelihood evaluation.
-\end{itemize}
+The system is designed for computational biologists, statisticians, and machine learning researchers who require scalable, geometry-aware phylogenetic comparative methods (PCM) implemented in modern differentiable computing frameworks.
 
-\section*{Mathematical Formulation}
+---
 
-\subsection*{Trait Evolution as an SDE}
+## Core Idea
 
-Trait evolution along each branch is modeled as an It\^o SDE:
-\begin{equation}
-dX_t = \mu(X_t)\,dt + \sigma(X_t)\,dW_t,
-\end{equation}
+Trait evolution along each branch of a phylogenetic tree is modeled as an Itô diffusion:
+
+\[
+dX_t = \mu(X_t)\,dt + \sigma(X_t)\,dW_t
+\]
+
+with either:
+
+- **Reflecting boundary conditions** on an interval \([L, U]\), or  
+- **Riemannian manifold constraints**, specifically:
+  - \( S^1 \) (the circle)
+  - \( \Delta^d \) (the probability simplex)
+
+On a Riemannian manifold \( (\mathcal{M}, g) \), the infinitesimal generator is:
+
+\[
+\mathcal{L} f = \frac{1}{2}\Delta_g f + \langle b, \nabla f \rangle_g
+\]
+
 where:
-\begin{itemize}
-    \item $\mu(x)$ is the drift,
-    \item $\sigma(x)$ is the diffusion coefficient,
-    \item $W_t$ is standard Brownian motion.
-\end{itemize}
+- \( \Delta_g \) is the Laplace–Beltrami operator,
+- \( \nabla \) is the Riemannian gradient,
+- \( b \) is the drift vector field.
 
-The infinitesimal generator $\mathcal{L}$ of the process is
-\begin{equation}
-\mathcal{L}f(x)
-=
-\mu(x) \nabla f(x)
-+
-\frac{1}{2} \sigma(x)^2 \Delta f(x).
-\end{equation}
+Transition densities are approximated using spectral expansions:
 
-\subsection*{Reflecting Boundaries on $[L,U]$}
+\[
+p_t(x, y) \approx \sum_{k=0}^{K} e^{-\lambda_k t}\,\phi_k(x)\phi_k(y)
+\]
 
-For compact domains $[L,U]$, reflecting boundary conditions impose Neumann constraints:
-\begin{equation}
-\left. \frac{\partial f}{\partial n} \right|_{x=L}
-=
-\left. \frac{\partial f}{\partial n} \right|_{x=U}
-=
-0.
-\end{equation}
+where \( (\lambda_k, \phi_k) \) are eigenpairs of the negative generator subject to boundary or manifold constraints.
 
-This ensures that probability mass is conserved and trajectories are reflected rather than absorbed at the boundary.
+These approximations feed into a novel **Boundary-Propagating Pruning (BPP)** algorithm for likelihood computation on trees.
 
-\subsection*{Diffusions on Riemannian Manifolds}
+---
 
-On a Riemannian manifold $(\mathcal{M}, g)$, the generator generalizes to:
-\begin{equation}
-\mathcal{L} f
-=
-\frac{1}{2} \Delta_g f
-+
-\langle b, \nabla f \rangle_g,
-\end{equation}
-where:
-\begin{itemize}
-    \item $\Delta_g$ is the Laplace--Beltrami operator,
-    \item $\langle \cdot, \cdot \rangle_g$ denotes the Riemannian metric,
-    \item $b$ is the drift vector field.
-\end{itemize}
+## Key Features
 
-\paragraph{Circle $S^1$.}
-The Laplace--Beltrami operator reduces to:
-\begin{equation}
-\Delta_{S^1} f(\theta)
-=
-\frac{\partial^2 f}{\partial \theta^2}.
-\end{equation}
+### Reflective Boundaries
+Implements Neumann-type (zero-flux) reflecting conditions on bounded intervals \([L, U]\).
 
-\paragraph{Simplex $\Delta^d$.}
-The geometry is induced by the Fisher--Rao metric, yielding nontrivial curvature and requiring intrinsic gradient and divergence operators.
+### Manifold Support
+Supports:
+- Circular traits (angles, periodic phenotypes)
+- Compositional data on simplices
 
-\section*{Spectral Transition Approximation}
+### Spectral Transition Approximations
+Efficient eigen-decomposition–based transition approximations compatible with JAX autodiff.
 
-Transition densities are approximated using spectral decomposition:
-\begin{equation}
-p_t(x,y)
-\approx
-\sum_{k=0}^{K}
-e^{-\lambda_k t}
-\phi_k(x)\phi_k(y),
-\end{equation}
-where $\{(\lambda_k, \phi_k)\}$ are eigenpairs of $-\mathcal{L}$ satisfying the appropriate boundary or geometric constraints:
-\begin{equation}
--\mathcal{L} \phi_k = \lambda_k \phi_k.
-\end{equation}
+### Differentiable Likelihood
+Fully compatible with JAX automatic differentiation for gradient-based parameter estimation.
 
-This representation enables efficient and numerically stable likelihood computation on trees.
+### Vectorized Tree Traversal
+Uses `jax.vmap` and `jax.lax.scan` to ensure:
+- \( O(N) \) tree traversal complexity
+- Efficient batching over parameter sets
 
-\section*{Boundary-Propagating Pruning (BPP)}
+### R Interface
+Includes a reticulate-ready bridge for seamless integration with R-based PCM workflows.
 
-Given a phylogenetic tree $\mathcal{T}$ with $N$ nodes, the likelihood is computed via recursive message passing.
+---
 
-For each node $i$:
-\begin{equation}
-\mathcal{L}_i(x)
-=
-\prod_{j \in \text{children}(i)}
-\int
-p_{t_{ij}}(x,y)
-\mathcal{L}_j(y)
-\, dy.
-\end{equation}
+## Repository Structure
+kernels.py # SDE generators and spectral basis functions
+manifolds.py # Geometry definitions (S1, Δd, metric tensors)
+tree_ops.py # JAX-compatible tree traversal utilities
+spectral_solver.py # Eigenvalue/eigenvector computation for transitions
+pruning.py # Boundary-Propagating Pruning (BPP) algorithm
+likelihood.py # Log-likelihood wrappers and objective functions
+optimizers.py # Gradient descent and L-BFGS routines
+simulations.py # Forward SDE simulators on trees
+bridge_r.py # R interface (reticulate compatible)
+main.py # Pipeline execution and validation tests
 
-The total tree likelihood is:
-\begin{equation}
-\mathcal{L}_{\text{tree}}
-=
-\int
-\pi(x_{\text{root}})
-\mathcal{L}_{\text{root}}(x_{\text{root}})
-\, dx_{\text{root}},
-\end{equation}
-where $\pi$ is the root distribution.
 
-The BPP algorithm performs this recursion in $O(N)$ time using vectorized JAX primitives.
+---
 
-\section*{Architecture}
+## Installation
 
-The system is modularized into the following components:
+Requirements:
 
-\begin{enumerate}[label=\arabic*.]
-    \item \texttt{kernels.py} --- infinitesimal generators and spectral bases.
-    \item \texttt{manifolds.py} --- Riemannian geometry definitions.
-    \item \texttt{tree\_ops.py} --- JAX-compatible tree traversal.
-    \item \texttt{spectral\_solver.py} --- eigenvalue and eigenfunction computation.
-    \item \texttt{pruning.py} --- Boundary-Propagating Pruning implementation.
-    \item \texttt{likelihood.py} --- log-likelihood wrappers.
-    \item \texttt{optimizers.py} --- gradient-based parameter estimation.
-    \item \texttt{simulations.py} --- forward simulation engine.
-    \item \texttt{bridge\_r.py} --- R interface layer.
-    \item \texttt{main.py} --- execution and validation pipeline.
-\end{enumerate}
+- Python ≥ 3.9  
+- JAX (CPU or GPU backend)  
+- NumPy, SciPy  
+- Optional: optax, matplotlib  
+- Optional (R side): reticulate  
 
-\section*{Computational Design Principles}
+Example installation:
 
-\begin{itemize}
-    \item All functions are pure and JIT-compatible.
-    \item Tree traversals use vectorized scans for $O(N)$ complexity.
-    \item Automatic differentiation enables gradient-based optimization.
-    \item Spectral truncation provides controlled approximation accuracy.
-\end{itemize}
-
-\section*{Validation}
-
-Validation includes:
-\begin{itemize}
-    \item Convergence to classical Brownian and Ornstein--Uhlenbeck limits.
-    \item Simulation-based calibration.
-    \item Stability tests near reflecting boundaries and high curvature regions.
-\end{itemize}
-
-\section*{Conclusion}
-
-BOUND-SDE provides a unified, differentiable, and geometrically principled framework for constrained trait evolution on phylogenetic trees. By combining spectral theory, Riemannian geometry, and scalable JAX-based computation, the system enables statistically rigorous and computationally efficient phylogenetic inference under boundary-aware stochastic processes.
+```bash
+pip install -r requirements.txt
