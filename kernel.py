@@ -263,3 +263,173 @@ def orthonormalize_simplex_basis(degree: int,
         return jnp.einsum('...m,mk->...k', monoms, C.T)
 
     return orthonormal_basis_fn, C
+
+### ============================================================
+### Analytical Generators for Common Manifolds
+### ============================================================
+
+def interval_reflective_generator(
+    mu: float,
+    sigma: float,
+    L: float,
+    U: float
+):
+    """
+    Construct infinitesimal generator for a reflected diffusion on interval [L,U].
+
+    The SDE with reflection is:
+
+    dX_t = μ dt + σ dW_t + dK_t
+
+    where K_t enforces reflection at the boundaries.
+
+    The generator inside the interval is
+
+    Lf(x) = μ f'(x) + 1/2 σ² f''(x)
+
+    with Neumann boundary conditions
+
+    f'(L) = 0
+    f'(U) = 0
+
+    Parameters
+    ----------
+    mu : float
+        Drift coefficient.
+    sigma : float
+        Diffusion coefficient.
+    L : float
+        Lower reflective boundary.
+    U : float
+        Upper reflective boundary.
+
+    Returns
+    -------
+    generator
+        Callable f(x) -> Lf(x)
+    """
+
+    def generator(f_fn, x):
+
+        f_prime = jax.grad(f_fn)
+        f_double = jax.grad(f_prime)
+
+        drift = mu * f_prime(x)
+        diffusion = 0.5 * sigma ** 2 * f_double(x)
+
+        return drift + diffusion
+
+    return generator
+
+def s1_generator(mu: float, sigma: float):
+    """
+    Generator for diffusion on S¹.
+
+    SDE
+    ---
+    dθ_t = μ dt + σ dW_t
+
+    Generator
+    ---------
+    Lf(θ) = μ f'(θ) + 1/2 σ² f''(θ)
+
+    Parameters
+    ----------
+    mu : float
+    sigma : float
+
+    Returns
+    -------
+    generator
+        Callable applying generator to function f.
+    """
+
+    def generator(f_fn, theta):
+
+        f_prime = jax.grad(f_fn)
+        f_double = jax.grad(f_prime)
+
+        drift = mu * f_prime(theta)
+        diffusion = 0.5 * sigma ** 2 * f_double(theta)
+
+        return drift + diffusion
+
+    return generator
+
+def wright_fisher_generator(alpha: jnp.ndarray):
+    """
+    Wright-Fisher diffusion generator on simplex Δ^d.
+
+    Parameters
+    ----------
+    alpha : (d+1,)
+        Dirichlet concentration parameters.
+
+    Returns
+    -------
+    generator
+        Callable applying generator to function f(x).
+    """
+
+    alpha = jnp.asarray(alpha)
+    dim = alpha.shape[0]
+
+    def generator(f_fn, x):
+
+        grad_f = jax.grad(f_fn)
+        hess_f = jax.hessian(f_fn)
+
+        g = grad_f(x)
+        H = hess_f(x)
+
+        # Drift term
+        alpha_sum = jnp.sum(alpha)
+        drift = alpha - x * alpha_sum
+
+        drift_term = jnp.dot(drift, g)
+
+        # Diffusion matrix
+        I = jnp.eye(dim)
+        A = jnp.outer(x, x)
+        diffusion = jnp.diag(x) - A
+
+        diff_term = 0.5 * jnp.sum(diffusion * H)
+
+        return drift_term + diff_term
+
+    return generator
+
+def apply_generator_to_basis(generator, basis_fn, x):
+    """
+    Apply generator to each basis function.
+
+    Parameters
+    ----------
+    generator : callable
+        Generator operator L.
+
+    basis_fn : callable
+        basis_fn(x) -> (K,) basis evaluations.
+
+    x : (..., d)
+
+    Returns
+    -------
+    Lphi : (..., K)
+        Generator applied to each basis function.
+    """
+
+    phi = basis_fn(x)
+
+    def basis_component(k):
+
+        def f(z):
+            return basis_fn(z)[k]
+
+        return generator(f, x)
+
+    K = phi.shape[-1]
+
+    Lphi = jax.vmap(basis_component)(jnp.arange(K))
+
+    return Lphi
