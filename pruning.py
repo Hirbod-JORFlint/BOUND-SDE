@@ -736,3 +736,154 @@ def aggregate_child_messages_masked(
         return jnp.sum(msgs, axis=0)
 
     return jax.vmap(aggregate)(node_branches)
+
+# ============================================================
+# Normalize Node Log-Likelihood
+# ============================================================
+
+def normalize_node_loglik(
+    node_loglik: jnp.ndarray
+) -> tuple:
+    """
+    Normalize a node log-likelihood vector.
+
+    Mathematical definition
+    -----------------------
+
+    Given log-likelihood vector
+
+        L(k)
+
+    compute scaling factor
+
+        s = log Σ_k exp(L(k))
+
+    and normalized vector
+
+        L̃(k) = L(k) − s
+
+    Parameters
+    ----------
+    node_loglik : jnp.ndarray
+
+        Shape
+        -----
+        (M,)
+
+    Returns
+    -------
+    normalized : jnp.ndarray
+
+        Shape
+        -----
+        (M,)
+
+    scale : float
+        Log-scaling constant.
+    """
+
+    scale = jsp.special.logsumexp(node_loglik)
+
+    normalized = node_loglik - scale
+
+    return normalized, scale
+
+# ============================================================
+# Normalize All Nodes
+# ============================================================
+
+def normalize_all_nodes(
+    node_loglik: jnp.ndarray
+) -> tuple:
+    """
+    Normalize log-likelihood vectors for all nodes.
+
+    Parameters
+    ----------
+    node_loglik : jnp.ndarray
+
+        Shape
+        -----
+        (N, M)
+
+    Returns
+    -------
+    normalized_loglik : jnp.ndarray
+
+        Shape
+        -----
+        (N, M)
+
+    scales : jnp.ndarray
+
+        Shape
+        -----
+        (N,)
+    """
+
+    def normalize_row(row):
+
+        scale = jsp.special.logsumexp(row)
+
+        return row - scale, scale
+
+    normalized, scales = jax.vmap(normalize_row)(node_loglik)
+
+    return normalized, scales
+
+# ============================================================
+# Incremental Node Normalization
+# ============================================================
+
+def normalize_node_inplace(
+    node_loglik: jnp.ndarray,
+    node_index: int,
+    scale_buffer: jnp.ndarray
+) -> tuple:
+    """
+    Normalize a specific node likelihood inside traversal.
+
+    Parameters
+    ----------
+    node_loglik : jnp.ndarray
+
+        Shape
+        -----
+        (N, M)
+
+    node_index : int
+
+    scale_buffer : jnp.ndarray
+
+        Shape
+        -----
+        (N,)
+
+    Returns
+    -------
+    updated_loglik : jnp.ndarray
+
+        Shape
+        -----
+        (N, M)
+
+    updated_scales : jnp.ndarray
+
+        Shape
+        -----
+        (N,)
+    """
+
+    row = node_loglik[node_index]
+
+    scale = jsp.special.logsumexp(row)
+
+    normalized = row - scale
+
+    node_loglik = node_loglik.at[node_index].set(normalized)
+
+    scale_buffer = scale_buffer.at[node_index].set(scale)
+
+    return node_loglik, scale_buffer
+
+
