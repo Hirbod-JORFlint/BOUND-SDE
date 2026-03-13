@@ -408,4 +408,331 @@ def construct_boundary_operator(
     else:
         raise ValueError("Unsupported boundary domain.")
 
+# ============================================================
+# Propagate Likelihood Across Single Branch
+# ============================================================
 
+def propagate_branch_likelihood(
+    child_loglik: jnp.ndarray,
+    transition: jnp.ndarray
+) -> jnp.ndarray:
+    """
+    Propagate likelihood from child node to parent node.
+
+    Mathematical definition
+    -----------------------
+
+    Let L_c(m) be the log-likelihood vector at child node c.
+
+    For a branch with transition matrix T_{km}(t),
+
+        M_{c→p}(k)
+        =
+        log Σ_m T_{km}(t) exp(L_c(m))
+
+    To maintain numerical stability we compute
+
+        M_{c→p}(k)
+        =
+        logsumexp( log(T_{km}(t)) + L_c(m) )
+
+    Parameters
+    ----------
+    child_loglik : jnp.ndarray
+        Log-likelihood vector at child node.
+
+        Shape
+        -----
+        (M,)
+
+    transition : jnp.ndarray
+        Spectral transition matrix for branch.
+
+        Shape
+        -----
+        (M, M)
+
+    Returns
+    -------
+    message : jnp.ndarray
+        Log-likelihood message sent to parent node.
+
+        Shape
+        -----
+        (M,)
+    """
+
+    # --------------------------------------------------------
+    # Compute log transition matrix
+    # --------------------------------------------------------
+
+    logT = jnp.log(transition + 1e-300)
+
+    # --------------------------------------------------------
+    # Broadcast addition
+    # --------------------------------------------------------
+
+    # shape (M,M)
+    combined = logT + child_loglik[None, :]
+
+    # --------------------------------------------------------
+    # Log-sum-exp over child states
+    # --------------------------------------------------------
+
+    message = jsp.special.logsumexp(combined, axis=1)
+
+    return message
+
+# ============================================================
+# Vectorized Branch Propagation
+# ============================================================
+
+def propagate_all_branches(
+    child_logliks: jnp.ndarray,
+    transitions: jnp.ndarray
+) -> jnp.ndarray:
+    """
+    Propagate likelihood messages along all branches.
+
+    Parameters
+    ----------
+    child_logliks : jnp.ndarray
+        Log-likelihood vectors for each branch child node.
+
+        Shape
+        -----
+        (B, M)
+
+    transitions : jnp.ndarray
+        Transition matrices for each branch.
+
+        Shape
+        -----
+        (B, M, M)
+
+    Returns
+    -------
+    messages : jnp.ndarray
+        Branch likelihood messages.
+
+        Shape
+        -----
+        (B, M)
+    """
+
+    return jax.vmap(propagate_branch_likelihood)(
+        child_logliks,
+        transitions
+    )
+
+# ============================================================
+# Propagate Messages Using Tree Structure
+# ============================================================
+
+def propagate_tree_branches(
+    node_loglik: jnp.ndarray,
+    branch_child: jnp.ndarray,
+    transitions: jnp.ndarray
+) -> jnp.ndarray:
+    """
+    Compute branch messages using tree child indexing.
+
+    Parameters
+    ----------
+    node_loglik : jnp.ndarray
+        Log-likelihood matrix for all nodes.
+
+        Shape
+        -----
+        (N, M)
+
+    branch_child : jnp.ndarray
+        Child node index for each branch.
+
+        Shape
+        -----
+        (B,)
+
+    transitions : jnp.ndarray
+        Spectral transition matrices.
+
+        Shape
+        -----
+        (B, M, M)
+
+    Returns
+    -------
+    branch_messages : jnp.ndarray
+
+        Shape
+        -----
+        (B, M)
+    """
+
+    child_logliks = node_loglik[branch_child]
+
+    branch_messages = propagate_all_branches(
+        child_logliks,
+        transitions
+    )
+
+    return branch_messages
+
+# ============================================================
+# Aggregate Messages From Children
+# ============================================================
+
+def aggregate_child_messages(
+    branch_messages: jnp.ndarray,
+    node_branches: jnp.ndarray
+) -> jnp.ndarray:
+    """
+    Aggregate incoming branch messages to compute node log-likelihood.
+
+    Mathematical definition
+    -----------------------
+
+    Let M_{c→p}(k) be the message from child c to parent p.
+
+    The node likelihood is
+
+        log L_p(k)
+        =
+        Σ_{c ∈ children(p)} M_{c→p}(k)
+
+    Parameters
+    ----------
+    branch_messages : jnp.ndarray
+        Messages from branches.
+
+        Shape
+        -----
+        (B, M)
+
+    node_branches : jnp.ndarray
+        Indices of branches entering a node.
+
+        Shape
+        -----
+        (max_degree,)
+
+        Negative values indicate empty entries.
+
+    Returns
+    -------
+    node_loglik : jnp.ndarray
+        Aggregated node log-likelihood vector.
+
+        Shape
+        -----
+        (M,)
+    """
+
+    M = branch_messages.shape[1]
+
+    def get_msg(b):
+        return jax.lax.cond(
+            b >= 0,
+            lambda _: branch_messages[b],
+            lambda _: jnp.zeros((M,)),
+            operand=None
+        )
+
+    msgs = jax.vmap(get_msg)(node_branches)
+
+    node_loglik = jnp.sum(msgs, axis=0)
+
+    return node_loglik
+
+# ============================================================
+# Aggregate Messages For Entire Tree
+# ============================================================
+
+def aggregate_all_nodes(
+    branch_messages: jnp.ndarray,
+    node_branches: jnp.ndarray
+) -> jnp.ndarray:
+    """
+    Compute aggregated node likelihoods for all nodes.
+
+    Parameters
+    ----------
+    branch_messages : jnp.ndarray
+
+        Shape
+        -----
+        (B, M)
+
+    node_branches : jnp.ndarray
+
+        Shape
+        -----
+        (N, max_degree)
+
+    Returns
+    -------
+    node_loglik : jnp.ndarray
+
+        Shape
+        -----
+        (N, M)
+    """
+
+    return jax.vmap(
+        lambda branches: aggregate_child_messages(
+            branch_messages,
+            branches
+        )
+    )(node_branches)
+
+# ============================================================
+# Efficient Masked Aggregation
+# ============================================================
+
+def aggregate_child_messages_masked(
+    branch_messages: jnp.ndarray,
+    node_branches: jnp.ndarray
+) -> jnp.ndarray:
+    """
+    Efficient aggregation using masked indexing.
+
+    Parameters
+    ----------
+    branch_messages : jnp.ndarray
+
+        Shape
+        -----
+        (B, M)
+
+    node_branches : jnp.ndarray
+
+        Shape
+        -----
+        (N, max_degree)
+
+    Returns
+    -------
+    node_loglik : jnp.ndarray
+
+        Shape
+        -----
+        (N, M)
+    """
+
+    B, M = branch_messages.shape
+
+    max_degree = node_branches.shape[1]
+
+    def aggregate(node_branch_row):
+
+        mask = node_branch_row >= 0
+
+        safe_idx = jnp.where(mask, node_branch_row, 0)
+
+        msgs = branch_messages[safe_idx]
+
+        msgs = msgs * mask[:, None]
+
+        return jnp.sum(msgs, axis=0)
+
+    return jax.vmap(aggregate)(node_branches)
