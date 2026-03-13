@@ -5,6 +5,7 @@ from enum import Enum
 import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
+from typing import NamedTuple
 
 # ============================================================
 # Spectral Branch Transition Operators
@@ -887,3 +888,289 @@ def normalize_node_inplace(
     return node_loglik, scale_buffer
 
 
+# ============================================================
+# Scan State Structure
+# ============================================================
+
+
+class PruningState(NamedTuple):
+    """
+    State carried through the pruning scan.
+
+    Attributes
+    ----------
+    node_loglik : jnp.ndarray
+        Node log-likelihood vectors.
+
+        Shape
+        -----
+        (N, M)
+
+    branch_messages : jnp.ndarray
+        Messages along branches.
+
+        Shape
+        -----
+        (B, M)
+
+    scales : jnp.ndarray
+        Log-scaling constants for nodes.
+
+        Shape
+        -----
+        (N,)
+    """
+
+    node_loglik: jnp.ndarray
+    branch_messages: jnp.ndarray
+    scales: jnp.ndarray
+
+# ============================================================
+# BPP Scan Step
+# ============================================================
+
+def pruning_scan_step(
+    state: PruningState,
+    node_index: int,
+    parent_index: jnp.ndarray,
+    parent_branch: jnp.ndarray,
+    branch_lengths: jnp.ndarray,
+    eigenvalues: jnp.ndarray,
+    eigenvectors: jnp.ndarray,
+    inv_eigenvectors: jnp.ndarray
+) -> tuple:
+    """
+    Perform one pruning update for a single node.
+
+    Mathematical definition
+    -----------------------
+
+    For child node c and parent p:
+
+    1. Propagate likelihood along branch
+
+        M_{c→p}(k)
+        =
+        log Σ_j exp(
+            L_c(j) + log P_b(j,k)
+        )
+
+    2. Accumulate into parent
+
+        L_p(k) += M_{c→p}(k)
+
+    3. Normalize parent likelihood
+
+        L̃_p(k) = L_p(k) − log Σ_k exp(L_p(k))
+
+    Parameters
+    ----------
+    state : PruningState
+
+    node_index : int
+
+    parent_index : jnp.ndarray
+
+        Shape
+        -----
+        (N,)
+
+    parent_branch : jnp.ndarray
+
+        Shape
+        -----
+        (N,)
+
+    branch_lengths : jnp.ndarray
+
+        Shape
+        -----
+        (B,)
+
+    eigenvalues : jnp.ndarray
+
+        Shape
+        -----
+        (M,)
+
+    eigenvectors : jnp.ndarray
+
+        Shape
+        -----
+        (M, M)
+
+    inv_eigenvectors : jnp.ndarray
+
+        Shape
+        -----
+        (M, M)
+
+    Returns
+    -------
+    new_state : PruningState
+    None
+    """
+
+    node_loglik = state.node_loglik
+    branch_messages = state.branch_messages
+    scales = state.scales
+
+    child_vec = node_loglik[node_index]
+
+    p = parent_index[node_index]
+    b = parent_branch[node_index]
+
+    def propagate():
+
+        t = branch_lengths[b]
+
+        exp_diag = jnp.exp(eigenvalues * t)
+
+        transition = eigenvectors @ (exp_diag[:, None] * inv_eigenvectors)
+
+        log_transition = jnp.log(jnp.clip(transition, 1e-30))
+
+        msg = jsp.special.logsumexp(
+            child_vec[:, None] + log_transition,
+            axis=0
+        )
+
+        return msg
+
+    msg = jax.lax.cond(
+        p >= 0,
+        lambda _: propagate(),
+        lambda _: jnp.zeros_like(child_vec),
+        operand=None
+    )
+
+    branch_messages = branch_messages.at[b].set(msg)
+
+    def update_parent():
+
+        parent_vec = node_loglik[p] + msg
+
+        scale = jsp.special.logsumexp(parent_vec)
+
+        parent_vec = parent_vec - scale
+
+        node_loglik_updated = node_loglik.at[p].set(parent_vec)
+
+        scales_updated = scales.at[p].add(scale)
+
+        return node_loglik_updated, scales_updated
+
+    node_loglik, scales = jax.lax.cond(
+        p >= 0,
+        lambda _: update_parent(),
+        lambda _: (node_loglik, scales),
+        operand=None
+    )
+
+    new_state = PruningState(
+        node_loglik=node_loglik,
+        branch_messages=branch_messages,
+        scales=scales
+    )
+
+    return new_state, None
+
+# ============================================================
+# Execute Full Pruning Traversal
+# ============================================================
+
+def run_pruning_scan(
+    postorder_nodes: jnp.ndarray,
+    node_loglik: jnp.ndarray,
+    parent_index: jnp.ndarray,
+    parent_branch: jnp.ndarray,
+    branch_lengths: jnp.ndarray,
+    eigenvalues: jnp.ndarray,
+    eigenvectors: jnp.ndarray,
+    inv_eigenvectors: jnp.ndarray
+):
+    """
+    Execute the full Boundary-Propagating Pruning traversal.
+
+    Parameters
+    ----------
+    postorder_nodes : jnp.ndarray
+        Post-order traversal order.
+
+        Shape
+        -----
+        (N,)
+
+    node_loglik : jnp.ndarray
+
+        Shape
+        -----
+        (N, M)
+
+    parent_index : jnp.ndarray
+
+        Shape
+        -----
+        (N,)
+
+    parent_branch : jnp.ndarray
+
+        Shape
+        -----
+        (N,)
+
+    branch_lengths : jnp.ndarray
+
+        Shape
+        -----
+        (B,)
+
+    eigenvalues : jnp.ndarray
+
+        Shape
+        -----
+        (M,)
+
+    eigenvectors : jnp.ndarray
+
+        Shape
+        -----
+        (M, M)
+
+    inv_eigenvectors : jnp.ndarray
+
+        Shape
+        -----
+        (M, M)
+
+    Returns
+    -------
+    final_state : PruningState
+    """
+
+    N, M = node_loglik.shape
+    B = branch_lengths.shape[0]
+
+    init_state = PruningState(
+        node_loglik=node_loglik,
+        branch_messages=jnp.zeros((B, M)),
+        scales=jnp.zeros((N,))
+    )
+
+    final_state, _ = jax.lax.scan(
+        lambda state, node:
+        pruning_scan_step(
+            state,
+            node,
+            parent_index,
+            parent_branch,
+            branch_lengths,
+            eigenvalues,
+            eigenvectors,
+            inv_eigenvectors
+        ),
+        init_state,
+        postorder_nodes
+    )
+
+    return final_state
