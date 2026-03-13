@@ -152,3 +152,259 @@ def compute_branch_transitions_stable(
     transitions = jax.vmap(jnp.diag)(spectral_exp)
 
     return transitions
+
+# ============================================================
+# Trait Geometry Enumeration
+# ============================================================
+
+class BoundaryDomain(Enum):
+    """
+    Enumeration of supported geometric constraint domains.
+    """
+
+    INTERVAL = 0
+    CIRCLE = 1
+    SIMPLEX = 2
+
+# ============================================================
+# Boundary Correction Transform
+# ============================================================
+
+def apply_boundary_correction(
+    transitions: jnp.ndarray,
+    boundary_operator: jnp.ndarray
+) -> jnp.ndarray:
+    """
+    Apply boundary normalization operator to spectral transitions.
+
+    Mathematical definition
+    -----------------------
+
+    Boundary corrected operator
+
+        T* = B T B^{-1}
+
+    where
+
+        B     = boundary normalization matrix
+        B^{-1} = inverse normalization
+
+    Parameters
+    ----------
+    transitions : jnp.ndarray
+        Raw spectral transition matrices.
+
+        Shape
+        -----
+        (B, M, M)
+
+    boundary_operator : jnp.ndarray
+        Boundary normalization matrix.
+
+        Shape
+        -----
+        (M, M)
+
+    Returns
+    -------
+    corrected : jnp.ndarray
+        Boundary-corrected transition operators.
+
+        Shape
+        -----
+        (B, M, M)
+    """
+
+    B = boundary_operator
+    B_inv = jnp.linalg.inv(B)
+
+    def transform(T):
+        return B @ T @ B_inv
+
+    corrected = jax.vmap(transform)(transitions)
+
+    return corrected
+
+# ============================================================
+# Identity Boundary Operator
+# ============================================================
+
+def identity_boundary_operator(M: int) -> jnp.ndarray:
+    """
+    Construct identity boundary operator.
+
+    This is used when the spectral basis already
+    satisfies the boundary conditions of the domain.
+
+    Parameters
+    ----------
+    M : int
+        Spectral dimension.
+
+    Returns
+    -------
+    B : jnp.ndarray
+
+        Shape
+        -----
+        (M, M)
+    """
+
+    return jnp.eye(M)
+
+# ============================================================
+# Interval Boundary Operator
+# ============================================================
+
+def interval_boundary_operator(
+    eigenvalues: jnp.ndarray
+) -> jnp.ndarray:
+    """
+    Construct reflective boundary normalization matrix
+    for interval diffusion.
+
+    Mathematical basis
+    ------------------
+
+    Reflective boundaries impose
+
+        ∂φ_k/∂n = 0
+
+    which is satisfied by cosine eigenfunctions.
+
+    We therefore use a diagonal normalization matrix
+
+        B_k = sqrt(|λ_k| + 1)
+
+    Parameters
+    ----------
+    eigenvalues : jnp.ndarray
+
+        Shape
+        -----
+        (M,)
+
+    Returns
+    -------
+    B : jnp.ndarray
+
+        Shape
+        -----
+        (M, M)
+    """
+
+    scale = jnp.sqrt(jnp.abs(eigenvalues) + 1.0)
+
+    return jnp.diag(scale)
+
+# ============================================================
+# Circular Boundary Operator
+# ============================================================
+
+def circular_boundary_operator(
+    M: int
+) -> jnp.ndarray:
+    """
+    Boundary operator for circular manifold S1.
+
+    Since Fourier eigenfunctions satisfy periodic
+    boundary conditions exactly, no correction
+    is required.
+
+    Parameters
+    ----------
+    M : int
+
+    Returns
+    -------
+    B : jnp.ndarray
+        Identity matrix.
+
+        Shape
+        -----
+        (M, M)
+    """
+
+    return jnp.eye(M)
+
+# ============================================================
+# Simplex Boundary Operator
+# ============================================================
+
+def simplex_boundary_operator(
+    eigenvalues: jnp.ndarray
+) -> jnp.ndarray:
+    """
+    Construct boundary normalization operator
+    for simplex diffusion.
+
+    Based on Fisher metric scaling.
+
+    Mathematical form
+    -----------------
+
+        B_k = sqrt(|λ_k| + ε)
+
+    Parameters
+    ----------
+    eigenvalues : jnp.ndarray
+
+        Shape
+        -----
+        (M,)
+
+    Returns
+    -------
+    B : jnp.ndarray
+
+        Shape
+        -----
+        (M, M)
+    """
+
+    eps = 1e-6
+
+    scale = jnp.sqrt(jnp.abs(eigenvalues) + eps)
+
+    return jnp.diag(scale)
+
+# ============================================================
+# Boundary Operator Dispatcher
+# ============================================================
+
+def construct_boundary_operator(
+    domain: BoundaryDomain,
+    eigenvalues: jnp.ndarray,
+    M: int
+) -> jnp.ndarray:
+    """
+    Construct appropriate boundary normalization operator.
+
+    Parameters
+    ----------
+    domain : BoundaryDomain
+
+    eigenvalues : jnp.ndarray
+        Shape (M,)
+
+    M : int
+
+    Returns
+    -------
+    B : jnp.ndarray
+        Shape (M, M)
+    """
+
+    if domain == BoundaryDomain.INTERVAL:
+        return interval_boundary_operator(eigenvalues)
+
+    elif domain == BoundaryDomain.CIRCLE:
+        return circular_boundary_operator(M)
+
+    elif domain == BoundaryDomain.SIMPLEX:
+        return simplex_boundary_operator(eigenvalues)
+
+    else:
+        raise ValueError("Unsupported boundary domain.")
+
+
