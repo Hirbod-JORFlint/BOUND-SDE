@@ -4,6 +4,7 @@
 from enum import Enum
 import jax
 import jax.numpy as jnp
+import jax.scipy as jsp
 
 # ============================================================
 # Spectral Branch Transition Operators
