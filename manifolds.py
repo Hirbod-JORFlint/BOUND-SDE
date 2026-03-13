@@ -278,3 +278,297 @@ def sphere_to_simplex(s: jnp.ndarray, eps: float = 1e-12) -> jnp.ndarray:
     sq = jnp.square(s)
     total = jnp.sum(sq, axis=-1, keepdims=True) + eps
     return sq / total
+
+# ============================================================
+# Riemannian Differential Operators for Manifold Diffusions
+# ============================================================
+
+
+# ------------------------------------------------------------
+# S1 Laplace–Beltrami Operator
+# ------------------------------------------------------------
+
+def s1_laplace_beltrami_operator(
+    theta: jnp.ndarray,
+    f_fn
+) -> jnp.ndarray:
+    """
+    Compute Laplace–Beltrami operator on S¹.
+
+    Mathematical definition
+    -----------------------
+
+    On the unit circle with coordinate θ,
+
+        Δ_{S¹} f = ∂²f / ∂θ²
+
+    Parameters
+    ----------
+    theta : jnp.ndarray
+
+        Shape
+        -----
+        (...,)
+
+    f_fn : Callable
+        Function mapping θ -> scalar.
+
+    Returns
+    -------
+    lap : jnp.ndarray
+
+        Shape
+        -----
+        (...,)
+    """
+
+    def single_point(t):
+
+        df = jax.grad(f_fn)(t)
+
+        d2f = jax.grad(lambda z: jax.grad(f_fn)(z))(t)
+
+        return d2f
+
+    return jax.vmap(single_point)(theta)
+
+
+# ------------------------------------------------------------
+# S1 Gradient Operator
+# ------------------------------------------------------------
+
+def s1_gradient(
+    theta: jnp.ndarray,
+    f_fn
+) -> jnp.ndarray:
+    """
+    Compute intrinsic gradient on S¹.
+
+    On S¹ the gradient reduces to
+
+        ∇f = df/dθ
+
+    Parameters
+    ----------
+    theta : jnp.ndarray
+
+        Shape
+        -----
+        (...,)
+
+    f_fn : Callable
+
+    Returns
+    -------
+    grad : jnp.ndarray
+
+        Shape
+        -----
+        (...,)
+    """
+
+    grad_fn = jax.grad(f_fn)
+
+    return jax.vmap(grad_fn)(theta)
+
+
+# ------------------------------------------------------------
+# Fisher Metric on Simplex
+# ------------------------------------------------------------
+
+def simplex_fisher_metric(
+    p: jnp.ndarray
+) -> jnp.ndarray:
+    """
+    Compute Fisher information metric on simplex.
+
+    Metric definition
+
+        g_ij = δ_ij / p_i
+
+    Parameters
+    ----------
+    p : jnp.ndarray
+
+        Shape
+        -----
+        (..., d)
+
+    Returns
+    -------
+    G : jnp.ndarray
+
+        Shape
+        -----
+        (..., d, d)
+    """
+
+    inv_p = 1.0 / p
+
+    return jnp.einsum("...i,ij->...ij", inv_p, jnp.eye(p.shape[-1]))
+
+
+# ------------------------------------------------------------
+# Riemannian Gradient on Simplex
+# ------------------------------------------------------------
+
+def simplex_riemannian_gradient(
+    p: jnp.ndarray,
+    f_fn
+) -> jnp.ndarray:
+    """
+    Compute Riemannian gradient under Fisher metric.
+
+    Definition
+
+        grad_f = G^{-1} ∇f
+
+    where G is the Fisher metric.
+
+    Parameters
+    ----------
+    p : jnp.ndarray
+
+        Shape
+        -----
+        (..., d)
+
+    f_fn : Callable
+
+    Returns
+    -------
+    grad : jnp.ndarray
+
+        Shape
+        -----
+        (..., d)
+    """
+
+    def single_point(x):
+
+        grad_euclid = jax.grad(f_fn)(x)
+
+        G = simplex_fisher_metric(x)
+
+        G_inv = jnp.linalg.inv(G)
+
+        return G_inv @ grad_euclid
+
+    return jax.vmap(single_point)(p)
+
+
+# ------------------------------------------------------------
+# Laplace–Beltrami Operator on Simplex
+# ------------------------------------------------------------
+
+def simplex_laplace_beltrami(
+    p: jnp.ndarray,
+    f_fn
+) -> jnp.ndarray:
+    """
+    Compute Laplace–Beltrami operator on simplex.
+
+    Mathematical expression
+
+        Δf =
+        (1 / √|g|)
+        ∂_i ( √|g| g^{ij} ∂_j f )
+
+    Using Fisher metric.
+
+    Parameters
+    ----------
+    p : jnp.ndarray
+
+        Shape
+        -----
+        (..., d)
+
+    f_fn : Callable
+
+    Returns
+    -------
+    lap : jnp.ndarray
+
+        Shape
+        -----
+        (...,)
+    """
+
+    def single_point(x):
+
+        grad = jax.grad(f_fn)(x)
+
+        hess = jax.jacfwd(jax.grad(f_fn))(x)
+
+        G = simplex_fisher_metric(x)
+
+        G_inv = jnp.linalg.inv(G)
+
+        term = jnp.trace(G_inv @ hess)
+
+        return term
+
+    return jax.vmap(single_point)(p)
+
+
+# ------------------------------------------------------------
+# Generic Manifold Diffusion Generator
+# ------------------------------------------------------------
+
+def manifold_diffusion_generator(
+    x: jnp.ndarray,
+    f_fn,
+    drift_fn,
+    diffusion_fn
+) -> jnp.ndarray:
+    """
+    Compute generator for manifold diffusion.
+
+    Generator
+
+        L f =
+        μ·∇f
+        +
+        (1/2) σ² Δ_M f
+
+    Parameters
+    ----------
+    x : jnp.ndarray
+
+        Shape
+        -----
+        (..., d)
+
+    f_fn : Callable
+
+    drift_fn : Callable
+
+    diffusion_fn : Callable
+
+    Returns
+    -------
+    Lf : jnp.ndarray
+
+        Shape
+        -----
+        (...,)
+    """
+
+    def single_point(z):
+
+        grad = jax.grad(f_fn)(z)
+
+        hess = jax.jacfwd(jax.grad(f_fn))(z)
+
+        mu = drift_fn(z)
+
+        sigma = diffusion_fn(z)
+
+        drift_term = jnp.dot(mu, grad)
+
+        diff_term = 0.5 * sigma**2 * jnp.trace(hess)
+
+        return drift_term + diff_term
+
+    return jax.vmap(single_point)(x)
