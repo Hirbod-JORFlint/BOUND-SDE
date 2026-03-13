@@ -264,172 +264,281 @@ def orthonormalize_simplex_basis(degree: int,
 
     return orthonormal_basis_fn, C
 
-### ============================================================
-### Analytical Generators for Common Manifolds
-### ============================================================
+# ============================================================
+# Section: Analytical Infinitesimal Generators on Manifolds
+# ============================================================
 
-def interval_reflective_generator(
-    mu: float,
-    sigma: float,
-    L: float,
-    U: float
-):
+
+# ------------------------------------------------------------
+# S1 Laplace–Beltrami Generator
+# ------------------------------------------------------------
+
+def s1_laplace_beltrami(theta: jnp.ndarray,
+                        basis_vals: jnp.ndarray,
+                        freqs: jnp.ndarray) -> jnp.ndarray:
     """
-    Construct infinitesimal generator for a reflected diffusion on interval [L,U].
+    Apply the Laplace–Beltrami generator on S¹ to Fourier basis functions.
 
-    The SDE with reflection is:
+    Mathematical Formulation
+    ------------------------
+    Brownian motion on the circle obeys
 
-    dX_t = μ dt + σ dW_t + dK_t
+        dX_t = σ dW_t
 
-    where K_t enforces reflection at the boundaries.
+    whose infinitesimal generator is the Laplace–Beltrami operator
 
-    The generator inside the interval is
+        L f(θ) = (σ² / 2) ∂²f / ∂θ²
 
-    Lf(x) = μ f'(x) + 1/2 σ² f''(x)
+    For the Fourier basis
 
-    with Neumann boundary conditions
+        φ_k(θ) = cos(kθ), sin(kθ)
 
-    f'(L) = 0
-    f'(U) = 0
+    the eigenvalue equation holds:
+
+        L φ_k = - (σ² / 2) k² φ_k
+
+    Therefore eigenvalues are
+
+        λ_k = - (σ² / 2) k²
 
     Parameters
     ----------
-    mu : float
-        Drift coefficient.
-    sigma : float
-        Diffusion coefficient.
-    L : float
-        Lower reflective boundary.
-    U : float
-        Upper reflective boundary.
+    theta : jnp.ndarray
+        Angle values on S¹.
+
+        Shape
+        -----
+        (...,)
+
+    basis_vals : jnp.ndarray
+        Precomputed Fourier basis values.
+
+        Shape
+        -----
+        (..., M)
+
+    freqs : jnp.ndarray
+        Frequency index per basis function.
+
+        Shape
+        -----
+        (M,)
 
     Returns
     -------
-    generator
-        Callable f(x) -> Lf(x)
+    L_phi : jnp.ndarray
+        Generator applied to basis functions.
+
+        Shape
+        -----
+        (..., M)
     """
 
-    def generator(f_fn, x):
+    sigma2 = 1.0
 
-        f_prime = jax.grad(f_fn)
-        f_double = jax.grad(f_prime)
+    eigenvalues = -0.5 * sigma2 * freqs ** 2
 
-        drift = mu * f_prime(x)
-        diffusion = 0.5 * sigma ** 2 * f_double(x)
+    return basis_vals * eigenvalues
 
-        return drift + diffusion
 
-    return generator
+# ------------------------------------------------------------
+# Wrapped Ornstein–Uhlenbeck Generator on S1
+# ------------------------------------------------------------
 
-def s1_generator(mu: float, sigma: float):
+def s1_wrapped_ou_generator(theta: jnp.ndarray,
+                            basis_fn,
+                            K: int,
+                            kappa: float,
+                            mu: float,
+                            sigma: float) -> jnp.ndarray:
     """
-    Generator for diffusion on S¹.
+    Generator for a Wrapped Ornstein–Uhlenbeck (WOU) process on S¹.
 
     SDE
     ---
-    dθ_t = μ dt + σ dW_t
+        dθ_t = κ (μ - θ_t) dt + σ dW_t    (wrapped mod 2π)
 
     Generator
-    ---------
-    Lf(θ) = μ f'(θ) + 1/2 σ² f''(θ)
+
+        L f(θ) =
+            κ (μ - θ) ∂f/∂θ
+            + (σ² / 2) ∂²f/∂θ²
+
+    This function evaluates the generator applied to the Fourier basis.
 
     Parameters
     ----------
+    theta : jnp.ndarray
+        Angle positions.
+
+        Shape
+        -----
+        (...,)
+
+    basis_fn : Callable
+        Function computing Fourier basis.
+
+    K : int
+        Max Fourier frequency.
+
+    kappa : float
+        OU mean reversion strength.
+
     mu : float
+        Preferred angle.
+
     sigma : float
+        Diffusion coefficient.
 
     Returns
     -------
-    generator
-        Callable applying generator to function f.
+    L_phi : jnp.ndarray
+        Generator applied to Fourier basis.
+
+        Shape
+        -----
+        (..., 2K+1)
     """
 
-    def generator(f_fn, theta):
+    theta = jnp.asarray(theta)
 
-        f_prime = jax.grad(f_fn)
-        f_double = jax.grad(f_prime)
+    def single_theta(th):
 
-        drift = mu * f_prime(theta)
-        diffusion = 0.5 * sigma ** 2 * f_double(theta)
+        def f(x):
+            return basis_fn(K, x)
 
-        return drift + diffusion
+        # first derivative
+        df = jax.jacrev(f)(th)
 
-    return generator
+        # second derivative
+        d2f = jax.jacfwd(jax.jacrev(f))(th)
 
-def wright_fisher_generator(alpha: jnp.ndarray):
+        drift = kappa * (mu - th)
+
+        return drift * df + 0.5 * sigma**2 * d2f
+
+    return jax.vmap(single_theta)(theta)
+
+
+# ------------------------------------------------------------
+# Wright–Fisher Generator on the Simplex Δd
+# ------------------------------------------------------------
+
+def wright_fisher_generator(p: jnp.ndarray,
+                            f_fn,
+                            theta: jnp.ndarray) -> jnp.ndarray:
     """
-    Wright-Fisher diffusion generator on simplex Δ^d.
+    Wright–Fisher diffusion generator on the simplex.
+
+    SDE
+    ---
+        dP_i = (θ_i - P_i Θ) dt
+               + Σ_j sqrt(P_i (δ_ij - P_j)) dW_j
+
+    where
+
+        Θ = Σ_i θ_i
+
+    Generator
+
+        L f(p) =
+            Σ_i (θ_i - p_i Θ) ∂f/∂p_i
+            + 1/2 Σ_{i,j} p_i (δ_ij - p_j) ∂²f/(∂p_i ∂p_j)
 
     Parameters
     ----------
-    alpha : (d+1,)
-        Dirichlet concentration parameters.
+    p : jnp.ndarray
+        Probability vectors on simplex.
+
+        Shape
+        -----
+        (..., d+1)
+
+    f_fn : Callable
+        Function mapping p -> vector of basis values.
+
+    theta : jnp.ndarray
+        Dirichlet drift parameters.
+
+        Shape
+        -----
+        (d+1,)
 
     Returns
     -------
-    generator
-        Callable applying generator to function f(x).
+    Lf : jnp.ndarray
+        Generator applied to basis functions.
+
+        Shape
+        -----
+        (..., M)
     """
 
-    alpha = jnp.asarray(alpha)
-    dim = alpha.shape[0]
+    Theta = jnp.sum(theta)
 
-    def generator(f_fn, x):
+    def single(p_vec):
 
-        grad_f = jax.grad(f_fn)
-        hess_f = jax.hessian(f_fn)
+        f = lambda x: f_fn(x)
 
-        g = grad_f(x)
-        H = hess_f(x)
+        grad = jax.jacrev(f)(p_vec)
 
-        # Drift term
-        alpha_sum = jnp.sum(alpha)
-        drift = alpha - x * alpha_sum
+        hess = jax.jacfwd(jax.jacrev(f))(p_vec)
 
-        drift_term = jnp.dot(drift, g)
+        drift = theta - p_vec * Theta
 
-        # Diffusion matrix
-        I = jnp.eye(dim)
-        A = jnp.outer(x, x)
-        diffusion = jnp.diag(x) - A
+        drift_term = jnp.dot(drift, grad)
 
-        diff_term = 0.5 * jnp.sum(diffusion * H)
+        cov = jnp.diag(p_vec) - jnp.outer(p_vec, p_vec)
+
+        diff_term = 0.5 * jnp.tensordot(hess, cov, axes=2)
 
         return drift_term + diff_term
 
-    return generator
+    return jax.vmap(single)(p)
 
-def apply_generator_to_basis(generator, basis_fn, x):
+
+# ------------------------------------------------------------
+# Vectorized Generator Application to Basis Sets
+# ------------------------------------------------------------
+
+def apply_generator_batch(generator_fn,
+                          states: jnp.ndarray,
+                          basis_fn):
     """
-    Apply generator to each basis function.
+    Apply a generator to basis functions across many states.
+
+    Designed for efficient spectral matrix construction.
+
+    Mathematical Goal
+    -----------------
+
+        A_{ij} = < φ_i , L φ_j >
+
+    which forms the operator matrix used for spectral solutions.
 
     Parameters
     ----------
-    generator : callable
-        Generator operator L.
+    generator_fn : Callable
+        Generator function.
 
-    basis_fn : callable
-        basis_fn(x) -> (K,) basis evaluations.
+    states : jnp.ndarray
+        Evaluation points.
 
-    x : (..., d)
+        Shape
+        -----
+        (N, ...)
+
+    basis_fn : Callable
+        Basis evaluation function.
 
     Returns
     -------
-    Lphi : (..., K)
-        Generator applied to each basis function.
+    Lphi : jnp.ndarray
+        Generator applied to basis values.
+
+        Shape
+        -----
+        (N, M)
     """
 
-    phi = basis_fn(x)
-
-    def basis_component(k):
-
-        def f(z):
-            return basis_fn(z)[k]
-
-        return generator(f, x)
-
-    K = phi.shape[-1]
-
-    Lphi = jax.vmap(basis_component)(jnp.arange(K))
-
-    return Lphi
+    return jax.vmap(generator_fn)(states)
