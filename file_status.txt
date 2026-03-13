@@ -11,7 +11,7 @@ STANDARDS: * O(N) efficiency via vectorization. All math in comments must use La
 
     spectral_solver.py: [In Progress]
 
-    pruning.py: [Not Started]
+    pruning.py: [In Progress]
 
     likelihood.py: [Not Started]
 
