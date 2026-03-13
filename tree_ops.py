@@ -445,3 +445,328 @@ def tree_postorder_scan(
     )
 
     return final_L
+
+# ============================================================
+# Branch Index Construction
+# ============================================================
+
+def build_branch_indices(
+    tree: TreeData
+) -> tuple:
+    """
+    Construct flat branch indexing arrays.
+
+    Parameters
+    ----------
+    tree : TreeData
+
+    Returns
+    -------
+    branch_child : jnp.ndarray
+        Child node index for each branch.
+
+        Shape
+        -----
+        (B,)
+
+    branch_parent : jnp.ndarray
+        Parent node index for each branch.
+
+        Shape
+        -----
+        (B,)
+
+    node_child_counts : jnp.ndarray
+        Number of children per node.
+
+        Shape
+        -----
+        (N,)
+
+    Notes
+    -----
+
+    Let
+
+        B = number of branches
+
+    For a tree with N nodes
+
+        B = N - 1
+    """
+
+    parent = tree.parent
+
+    child_nodes = jnp.where(parent >= 0)[0]
+
+    branch_child = child_nodes
+    branch_parent = parent[child_nodes]
+
+    N = parent.shape[0]
+
+    counts = jnp.zeros((N,), dtype=jnp.int32)
+    counts = counts.at[branch_parent].add(1)
+
+    return branch_child, branch_parent, counts
+
+
+# ============================================================
+# Branch Postorder Construction
+# ============================================================
+
+def compute_branch_postorder(
+    branch_child: jnp.ndarray,
+    branch_parent: jnp.ndarray
+) -> jnp.ndarray:
+    """
+    Compute branch ordering compatible with node postorder.
+
+    Parameters
+    ----------
+    branch_child : jnp.ndarray
+
+        Shape
+        -----
+        (B,)
+
+    branch_parent : jnp.ndarray
+
+        Shape
+        -----
+        (B,)
+
+    Returns
+    -------
+    branch_order : jnp.ndarray
+
+        Shape
+        -----
+        (B,)
+
+    Notes
+    -----
+
+    The order guarantees that
+
+        child branches appear before
+        parent branches
+
+    allowing bottom-up scans.
+    """
+
+    B = branch_child.shape[0]
+
+    # For postorder node indexing,
+    # child index is always < parent index.
+    order = jnp.argsort(branch_parent)
+
+    return order
+
+
+# ============================================================
+# Node-to-Branch Mapping
+# ============================================================
+
+def build_node_branch_matrix(
+    branch_child: jnp.ndarray,
+    branch_parent: jnp.ndarray,
+    N: int
+) -> jnp.ndarray:
+    """
+    Build padded matrix mapping nodes to incoming branches.
+
+    Parameters
+    ----------
+    branch_child : jnp.ndarray
+
+        Shape
+        -----
+        (B,)
+
+    branch_parent : jnp.ndarray
+
+        Shape
+        -----
+        (B,)
+
+    N : int
+        Number of nodes.
+
+    Returns
+    -------
+    node_branches : jnp.ndarray
+
+        Shape
+        -----
+        (N, max_degree)
+
+    Each row lists the branch indices entering the node.
+    Missing entries are -1.
+    """
+
+    counts = jnp.zeros((N,), dtype=jnp.int32)
+    counts = counts.at[branch_parent].add(1)
+
+    max_degree = int(counts.max())
+
+    node_branches = -jnp.ones((N, max_degree), dtype=jnp.int32)
+
+    cursor = jnp.zeros((N,), dtype=jnp.int32)
+
+    for b, p in enumerate(branch_parent.tolist()):
+
+        idx = cursor[p]
+
+        node_branches = node_branches.at[p, idx].set(b)
+
+        cursor = cursor.at[p].add(1)
+
+    return node_branches
+
+
+# ============================================================
+# Branch Propagation Kernel
+# ============================================================
+
+def propagate_branches(
+    branch_child: jnp.ndarray,
+    branch_transitions: jnp.ndarray,
+    node_likelihoods: jnp.ndarray
+) -> jnp.ndarray:
+    """
+    Compute propagated likelihoods along all branches.
+
+    Mathematical definition
+
+        M_{c→p} = T_{cp} L_c
+
+    Parameters
+    ----------
+    branch_child : jnp.ndarray
+
+        Shape
+        -----
+        (B,)
+
+    branch_transitions : jnp.ndarray
+
+        Shape
+        -----
+        (B, M, M)
+
+    node_likelihoods : jnp.ndarray
+
+        Shape
+        -----
+        (N, M)
+
+    Returns
+    -------
+    branch_messages : jnp.ndarray
+
+        Shape
+        -----
+        (B, M)
+    """
+
+    def single_branch(b):
+
+        child = branch_child[b]
+
+        T = branch_transitions[b]
+
+        Lc = node_likelihoods[child]
+
+        return T @ Lc
+
+    return jax.vmap(single_branch)(jnp.arange(branch_child.shape[0]))
+
+
+# ============================================================
+# Node Aggregation Kernel
+# ============================================================
+
+def aggregate_node_messages(
+    node_branches: jnp.ndarray,
+    branch_messages: jnp.ndarray,
+    node_likelihoods: jnp.ndarray,
+    is_tip: jnp.ndarray
+) -> jnp.ndarray:
+    """
+    Aggregate incoming branch messages to update node likelihoods.
+
+    Mathematical rule
+
+        L_i = Π_{b ∈ incoming(i)} M_b
+
+    Parameters
+    ----------
+    node_branches : jnp.ndarray
+
+        Shape
+        -----
+        (N, max_degree)
+
+    branch_messages : jnp.ndarray
+
+        Shape
+        -----
+        (B, M)
+
+    node_likelihoods : jnp.ndarray
+
+        Shape
+        -----
+        (N, M)
+
+    is_tip : jnp.ndarray
+
+        Shape
+        -----
+        (N,)
+
+    Returns
+    -------
+    updated_likelihoods : jnp.ndarray
+
+        Shape
+        -----
+        (N, M)
+    """
+
+    M = node_likelihoods.shape[1]
+
+    def update_node(i, L):
+
+        branches = node_branches[i]
+
+        def branch_msg(b):
+
+            return jax.lax.cond(
+                b >= 0,
+                lambda _: branch_messages[b],
+                lambda _: jnp.ones((M,)),
+                operand=None
+            )
+
+        msgs = jax.vmap(branch_msg)(branches)
+
+        combined = jnp.prod(msgs, axis=0)
+
+        new_val = jax.lax.cond(
+            is_tip[i],
+            lambda _: L[i],
+            lambda _: combined,
+            operand=None
+        )
+
+        L = L.at[i].set(new_val)
+
+        return L
+
+    return jax.lax.fori_loop(
+        0,
+        node_branches.shape[0],
+        update_node,
+        node_likelihoods
+    )
