@@ -542,3 +542,250 @@ def apply_generator_batch(generator_fn,
     """
 
     return jax.vmap(generator_fn)(states)
+
+# ============================================================
+# Reflecting Boundary Cosine Basis on [L,U]
+# ============================================================
+
+
+
+def interval_cosine_basis(
+    x: jnp.ndarray,
+    K: int,
+    L: float,
+    U: float
+) -> jnp.ndarray:
+    """
+    Reflecting-boundary cosine basis on interval [L,U].
+
+    Mathematical Definition
+    -----------------------
+
+    For reflecting diffusion with Neumann boundary conditions
+
+        ∂f/∂x (L) = 0
+        ∂f/∂x (U) = 0
+
+    the eigenfunctions are
+
+        φ_0(x) = 1 / sqrt(U-L)
+
+        φ_k(x) = sqrt(2/(U-L))
+                 cos(kπ(x-L)/(U-L)),  k≥1
+
+    Parameters
+    ----------
+    x : jnp.ndarray
+        Evaluation points.
+
+        Shape
+        -----
+        (...,)
+
+    K : int
+        Maximum cosine frequency.
+
+    L : float
+        Lower boundary.
+
+    U : float
+        Upper boundary.
+
+    Returns
+    -------
+    basis_vals : jnp.ndarray
+        Basis matrix.
+
+        Shape
+        -----
+        (..., K+1)
+    """
+
+    x = jnp.asarray(x)
+
+    width = U - L
+
+    # constant basis
+    phi0 = jnp.ones_like(x) / jnp.sqrt(width)
+
+    if K == 0:
+        return phi0[..., None]
+
+    k = jnp.arange(1, K + 1)
+
+    angles = (jnp.expand_dims(x - L, axis=-1) * k * jnp.pi) / width
+
+    cos_terms = jnp.cos(angles) * jnp.sqrt(2.0 / width)
+
+    basis = jnp.concatenate([phi0[..., None], cos_terms], axis=-1)
+
+    return basis
+
+
+# ------------------------------------------------------------
+# Laplacian Eigenvalues for Reflecting Interval
+# ------------------------------------------------------------
+
+def interval_laplacian_eigenvalues(
+    K: int,
+    sigma: float,
+    L: float,
+    U: float
+) -> jnp.ndarray:
+    """
+    Eigenvalues of the Laplacian generator on [L,U].
+
+    Generator
+    ---------
+
+        L f = (σ² / 2) ∂²f/∂x²
+
+    with Neumann boundary conditions.
+
+    Eigenvalues are
+
+        λ_k = - (σ² / 2) (kπ/(U-L))²
+
+    Parameters
+    ----------
+    K : int
+        Maximum basis index.
+
+    sigma : float
+        Diffusion coefficient.
+
+    L : float
+        Lower boundary.
+
+    U : float
+        Upper boundary.
+
+    Returns
+    -------
+    eigenvalues : jnp.ndarray
+
+        Shape
+        -----
+        (K+1,)
+    """
+
+    width = U - L
+
+    k = jnp.arange(0, K + 1)
+
+    eigenvalues = -0.5 * sigma**2 * (k * jnp.pi / width) ** 2
+
+    return eigenvalues
+
+
+# ------------------------------------------------------------
+# Generator Application for Reflecting Diffusions
+# ------------------------------------------------------------
+
+def reflecting_diffusion_generator(
+    x: jnp.ndarray,
+    basis_fn,
+    K: int,
+    mu_fn,
+    sigma_fn,
+    L: float,
+    U: float
+) -> jnp.ndarray:
+    """
+    Apply generator to cosine basis on [L,U].
+
+    Generator definition
+
+        L f(x) =
+        μ(x) ∂f/∂x +
+        (1/2) σ(x)² ∂²f/∂x²
+
+    reflecting boundaries enforce
+
+        ∂f/∂x = 0  at x = L, U
+
+    Parameters
+    ----------
+    x : jnp.ndarray
+        Evaluation points.
+
+        Shape
+        -----
+        (...,)
+
+    basis_fn : Callable
+        Basis function constructor.
+
+    K : int
+        Basis order.
+
+    mu_fn : Callable
+        Drift function μ(x).
+
+    sigma_fn : Callable
+        Diffusion σ(x).
+
+    L, U : float
+        Interval bounds.
+
+    Returns
+    -------
+    Lphi : jnp.ndarray
+
+        Shape
+        -----
+        (..., K+1)
+    """
+
+    def single_point(x_val):
+
+        def f(z):
+            return basis_fn(z, K, L, U)
+
+        # derivatives
+        df = jax.jacrev(f)(x_val)
+        d2f = jax.jacfwd(jax.jacrev(f))(x_val)
+
+        mu = mu_fn(x_val)
+        sigma = sigma_fn(x_val)
+
+        drift_term = mu * df
+        diff_term = 0.5 * sigma**2 * d2f
+
+        return drift_term + diff_term
+
+    return jax.vmap(single_point)(x)
+
+
+# ------------------------------------------------------------
+# Vectorized Interval Basis Evaluation
+# ------------------------------------------------------------
+
+def evaluate_interval_basis_batch(
+    states: jnp.ndarray,
+    K: int,
+    L: float,
+    U: float
+) -> jnp.ndarray:
+    """
+    Batch evaluation wrapper for interval cosine basis.
+
+    Parameters
+    ----------
+    states : jnp.ndarray
+        State positions.
+
+        Shape
+        -----
+        (N,)
+
+    Returns
+    -------
+    Phi : jnp.ndarray
+
+        Shape
+        -----
+        (N, K+1)
+    """
+
+    return interval_cosine_basis(states, K, L, U)
