@@ -1321,3 +1321,251 @@ def compute_root_loglikelihood(
     total_scale = jnp.sum(buffer.node_scales)
 
     return root_scale + total_scale
+
+# ============================================================
+# Trait Domain Enumeration
+# ============================================================
+
+from enum import Enum
+
+
+class TraitDomain(Enum):
+    """
+    Enumeration of supported trait domains.
+    """
+
+    INTERVAL = 0
+    CIRCLE = 1
+    SIMPLEX = 2
+
+# ============================================================
+# Interval Trait Projection
+# ============================================================
+
+def project_interval_traits(
+    traits: jnp.ndarray,
+    basis_fn
+) -> jnp.ndarray:
+    """
+    Project bounded traits onto spectral basis.
+
+    Mathematical definition
+
+        L_k = φ_k(x)
+
+    Parameters
+    ----------
+    traits : jnp.ndarray
+
+        Shape
+        -----
+        (T,)
+
+    basis_fn : Callable
+        Interval cosine basis function.
+
+    Returns
+    -------
+    spectral : jnp.ndarray
+
+        Shape
+        -----
+        (T, M)
+    """
+
+    return basis_fn(traits)
+
+# ============================================================
+# Circular Trait Projection
+# ============================================================
+
+def project_circular_traits(
+    theta: jnp.ndarray,
+    M: int
+) -> jnp.ndarray:
+    """
+    Project circular traits onto Fourier basis.
+
+    Mathematical definition
+
+        φ_k(θ) =
+        cos(kθ), sin(kθ)
+
+    Parameters
+    ----------
+    theta : jnp.ndarray
+
+        Shape
+        -----
+        (T,)
+
+    M : int
+        Number of spectral modes.
+
+    Returns
+    -------
+    spectral : jnp.ndarray
+
+        Shape
+        -----
+        (T, M)
+    """
+
+    k = jnp.arange(M // 2)
+
+    cos_terms = jnp.cos(theta[:, None] * k)
+
+    sin_terms = jnp.sin(theta[:, None] * k)
+
+    spectral = jnp.concatenate([cos_terms, sin_terms], axis=1)
+
+    return spectral
+
+# ============================================================
+# Simplex Trait Projection
+# ============================================================
+
+def project_simplex_traits(
+    compositions: jnp.ndarray,
+    basis_fn
+) -> jnp.ndarray:
+    """
+    Project simplex traits into spectral coordinates.
+
+    Transformation
+
+        z_i = log(p_i / p_d)
+
+    Parameters
+    ----------
+    compositions : jnp.ndarray
+
+        Shape
+        -----
+        (T, d)
+
+    basis_fn : Callable
+        Basis function defined on Euclidean space.
+
+    Returns
+    -------
+    spectral : jnp.ndarray
+
+        Shape
+        -----
+        (T, M)
+    """
+
+    denom = compositions[:, -1][:, None]
+
+    log_ratio = jnp.log(compositions[:, :-1] / denom)
+
+    return basis_fn(log_ratio)
+
+# ============================================================
+# Unified Trait Projection
+# ============================================================
+
+def project_traits_to_spectral(
+    traits,
+    domain: TraitDomain,
+    basis_fn,
+    M: int = None
+):
+    """
+    Project traits into spectral representation.
+
+    Parameters
+    ----------
+    traits : jnp.ndarray
+        Observed trait data.
+
+    domain : TraitDomain
+        Trait geometry.
+
+    basis_fn : Callable
+        Basis function for spectral expansion.
+
+    M : int
+        Spectral dimension (required for circle).
+
+    Returns
+    -------
+    spectral : jnp.ndarray
+
+        Shape
+        -----
+        (T, M)
+    """
+
+    if domain == TraitDomain.INTERVAL:
+
+        return project_interval_traits(traits, basis_fn)
+
+    elif domain == TraitDomain.CIRCLE:
+
+        return project_circular_traits(traits, M)
+
+    elif domain == TraitDomain.SIMPLEX:
+
+        return project_simplex_traits(traits, basis_fn)
+
+    else:
+
+        raise ValueError("Unsupported trait domain")
+
+# ============================================================
+# Tip Likelihood Initialization
+# ============================================================
+
+def initialize_tip_likelihoods(
+    tree: TreeData,
+    tip_traits: jnp.ndarray,
+    spectral_traits: jnp.ndarray,
+    M: int
+) -> jnp.ndarray:
+    """
+    Initialize node likelihood matrix.
+
+    Tips receive spectral coefficients.
+    Internal nodes initialized to zero.
+
+    Parameters
+    ----------
+    tree : TreeData
+
+    tip_traits : jnp.ndarray
+
+        Shape
+        -----
+        (N,)
+
+    spectral_traits : jnp.ndarray
+
+        Shape
+        -----
+        (T, M)
+
+    M : int
+        Spectral dimension.
+
+    Returns
+    -------
+    node_loglik : jnp.ndarray
+
+        Shape
+        -----
+        (N, M)
+    """
+
+    N = tree.parent.shape[0]
+
+    node_loglik = jnp.zeros((N, M))
+
+    tip_indices = jnp.where(tree.is_tip)[0]
+
+    node_loglik = node_loglik.at[tip_indices].set(
+        jnp.log(spectral_traits + 1e-300)
+    )
+
+    return node_loglik

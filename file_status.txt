@@ -7,7 +7,7 @@ STANDARDS: * O(N) efficiency via vectorization. All math in comments must use La
 
     manifolds.py: [In Progress]
 
-    tree_ops.py: [In Progress]
+    tree_ops.py: [Complete]
 
     spectral_solver.py: [In Progress]
 
@@ -23,5 +23,5 @@ STANDARDS: * O(N) efficiency via vectorization. All math in comments must use La
 
     main.py: [Not Started]
 
-CURRENT PROGRESS: Part 9 of 30.
+CURRENT PROGRESS: Part 10 of 30.
 ACTIVE TARGET: File [Number]: [Name].
