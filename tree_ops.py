@@ -770,3 +770,324 @@ def aggregate_node_messages(
         update_node,
         node_likelihoods
     )
+
+# ============================================================
+# Traversal Buffer Container
+# ============================================================
+
+class TraversalBuffer(NamedTuple):
+    """
+    Memory container used during likelihood traversal.
+
+    Attributes
+    ----------
+    node_loglik : jnp.ndarray
+        Log-likelihood vectors stored per node.
+
+        Shape
+        -----
+        (N, M)
+
+    branch_messages : jnp.ndarray
+        Messages propagated along branches.
+
+        Shape
+        -----
+        (B, M)
+
+    node_scales : jnp.ndarray
+        Normalization constants per node.
+
+        Shape
+        -----
+        (N,)
+    """
+
+    node_loglik: jnp.ndarray
+    branch_messages: jnp.ndarray
+    node_scales: jnp.ndarray
+
+# ============================================================
+# Buffer Initialization
+# ============================================================
+
+def initialize_traversal_buffer(
+    N: int,
+    B: int,
+    M: int
+) -> TraversalBuffer:
+    """
+    Allocate traversal buffers.
+
+    Parameters
+    ----------
+    N : int
+        Number of nodes.
+
+    B : int
+        Number of branches.
+
+    M : int
+        Spectral basis dimension.
+
+    Returns
+    -------
+    buffer : TraversalBuffer
+    """
+
+    node_loglik = jnp.zeros((N, M))
+
+    branch_messages = jnp.zeros((B, M))
+
+    node_scales = jnp.zeros((N,))
+
+    return TraversalBuffer(
+        node_loglik=node_loglik,
+        branch_messages=branch_messages,
+        node_scales=node_scales
+    )
+
+# ============================================================
+# Log-Space Normalization
+# ============================================================
+
+def normalize_log_likelihood(
+    loglik: jnp.ndarray
+) -> tuple:
+    """
+    Normalize log-likelihood vector.
+
+    Mathematical definition
+
+        L_i ← L_i / Z_i
+
+    where
+
+        Z_i = Σ_k L_i(k)
+
+    In log space
+
+        log Z_i = logsumexp(loglik)
+
+    Parameters
+    ----------
+    loglik : jnp.ndarray
+
+        Shape
+        -----
+        (M,)
+
+    Returns
+    -------
+    normalized : jnp.ndarray
+
+        Shape
+        -----
+        (M,)
+
+    log_scale : float
+        Normalization constant.
+    """
+
+    log_scale = jax.scipy.special.logsumexp(loglik)
+
+    normalized = loglik - log_scale
+
+    return normalized, log_scale
+
+# ============================================================
+# Batch Normalization
+# ============================================================
+
+def normalize_nodes(
+    node_loglik: jnp.ndarray
+) -> tuple:
+    """
+    Normalize likelihood vectors across all nodes.
+
+    Parameters
+    ----------
+    node_loglik : jnp.ndarray
+
+        Shape
+        -----
+        (N, M)
+
+    Returns
+    -------
+    normalized : jnp.ndarray
+        Normalized log likelihoods.
+
+        Shape
+        -----
+        (N, M)
+
+    scales : jnp.ndarray
+        Node normalization constants.
+
+        Shape
+        -----
+        (N,)
+    """
+
+    def norm_fn(v):
+        return normalize_log_likelihood(v)
+
+    normalized, scales = jax.vmap(norm_fn)(node_loglik)
+
+    return normalized, scales
+
+# ============================================================
+# Log-Space Branch Propagation
+# ============================================================
+
+def propagate_branches_logspace(
+    branch_child: jnp.ndarray,
+    branch_transitions: jnp.ndarray,
+    node_loglik: jnp.ndarray
+) -> jnp.ndarray:
+    """
+    Propagate log-likelihood messages along branches.
+
+    Mathematical definition
+
+        M_{c→p} = T_{cp} L_c
+
+    In log-space
+
+        log M_k =
+        log Σ_j T_kj exp(L_c(j))
+
+    Parameters
+    ----------
+    branch_child : jnp.ndarray
+
+        Shape
+        -----
+        (B,)
+
+    branch_transitions : jnp.ndarray
+
+        Shape
+        -----
+        (B, M, M)
+
+    node_loglik : jnp.ndarray
+
+        Shape
+        -----
+        (N, M)
+
+    Returns
+    -------
+    branch_messages : jnp.ndarray
+
+        Shape
+        -----
+        (B, M)
+    """
+
+    def single_branch(b):
+
+        child = branch_child[b]
+
+        logL = node_loglik[child]
+
+        T = branch_transitions[b]
+
+        logT = jnp.log(T + 1e-300)
+
+        vals = logT + logL[None, :]
+
+        return jax.scipy.special.logsumexp(vals, axis=1)
+
+    return jax.vmap(single_branch)(jnp.arange(branch_child.shape[0]))
+
+# ============================================================
+# Log-Space Node Aggregation
+# ============================================================
+
+def aggregate_node_messages_logspace(
+    node_branches: jnp.ndarray,
+    branch_messages: jnp.ndarray,
+    node_loglik: jnp.ndarray,
+    is_tip: jnp.ndarray
+) -> jnp.ndarray:
+    """
+    Aggregate incoming log-messages at nodes.
+
+    Mathematical rule
+
+        log L_i = Σ log M_b
+
+    Parameters
+    ----------
+    node_branches : jnp.ndarray
+
+        Shape
+        -----
+        (N, max_degree)
+
+    branch_messages : jnp.ndarray
+
+        Shape
+        -----
+        (B, M)
+
+    node_loglik : jnp.ndarray
+
+        Shape
+        -----
+        (N, M)
+
+    is_tip : jnp.ndarray
+
+        Shape
+        -----
+        (N,)
+
+    Returns
+    -------
+    updated : jnp.ndarray
+
+        Shape
+        -----
+        (N, M)
+    """
+
+    M = node_loglik.shape[1]
+
+    def update_node(i, L):
+
+        branches = node_branches[i]
+
+        def branch_msg(b):
+
+            return jax.lax.cond(
+                b >= 0,
+                lambda _: branch_messages[b],
+                lambda _: jnp.zeros((M,)),
+                operand=None
+            )
+
+        msgs = jax.vmap(branch_msg)(branches)
+
+        summed = jnp.sum(msgs, axis=0)
+
+        new_val = jax.lax.cond(
+            is_tip[i],
+            lambda _: L[i],
+            lambda _: summed,
+            operand=None
+        )
+
+        L = L.at[i].set(new_val)
+
+        return L
+
+    return jax.lax.fori_loop(
+        0,
+        node_branches.shape[0],
+        update_node,
+        node_loglik
+    )
