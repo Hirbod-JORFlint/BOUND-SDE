@@ -1091,3 +1091,233 @@ def aggregate_node_messages_logspace(
         update_node,
         node_loglik
     )
+
+# ============================================================
+# Traversal Step Kernel
+# ============================================================
+
+def traversal_step(
+    carry,
+    step_data
+):
+    """
+    Single traversal step executed inside lax.scan.
+
+    Parameters
+    ----------
+    carry : TraversalBuffer
+        Current traversal buffer.
+
+    step_data : tuple
+        Contains branch and node indexing information.
+
+    Returns
+    -------
+    new_carry : TraversalBuffer
+    output : None
+    """
+
+    buffer = carry
+
+    (
+        branch_child,
+        node_branches,
+        branch_transitions,
+        is_tip,
+        node_index
+    ) = step_data
+
+    node_loglik = buffer.node_loglik
+    branch_messages = buffer.branch_messages
+    node_scales = buffer.node_scales
+
+    # --------------------------------------------------------
+    # Branch propagation
+    # --------------------------------------------------------
+
+    def propagate_branch(b):
+
+        child = branch_child[b]
+
+        logL = node_loglik[child]
+
+        T = branch_transitions[b]
+
+        logT = jnp.log(T + 1e-300)
+
+        vals = logT + logL[None, :]
+
+        return jax.scipy.special.logsumexp(vals, axis=1)
+
+    branch_messages = jax.vmap(propagate_branch)(
+        jnp.arange(branch_child.shape[0])
+    )
+
+    # --------------------------------------------------------
+    # Node aggregation
+    # --------------------------------------------------------
+
+    branches = node_branches[node_index]
+
+    M = node_loglik.shape[1]
+
+    def branch_msg(b):
+
+        return jax.lax.cond(
+            b >= 0,
+            lambda _: branch_messages[b],
+            lambda _: jnp.zeros((M,)),
+            operand=None
+        )
+
+    msgs = jax.vmap(branch_msg)(branches)
+
+    summed = jnp.sum(msgs, axis=0)
+
+    # --------------------------------------------------------
+    # Tip condition
+    # --------------------------------------------------------
+
+    node_val = jax.lax.cond(
+        is_tip[node_index],
+        lambda _: node_loglik[node_index],
+        lambda _: summed,
+        operand=None
+    )
+
+    # --------------------------------------------------------
+    # Normalization
+    # --------------------------------------------------------
+
+    log_scale = jax.scipy.special.logsumexp(node_val)
+
+    normalized = node_val - log_scale
+
+    node_loglik = node_loglik.at[node_index].set(normalized)
+
+    node_scales = node_scales.at[node_index].set(log_scale)
+
+    new_buffer = TraversalBuffer(
+        node_loglik=node_loglik,
+        branch_messages=branch_messages,
+        node_scales=node_scales
+    )
+
+    return new_buffer, None
+
+# ============================================================
+# Full Tree Likelihood Propagation
+# ============================================================
+
+def run_tree_traversal(
+    tree: TreeData,
+    branch_child: jnp.ndarray,
+    node_branches: jnp.ndarray,
+    branch_transitions: jnp.ndarray,
+    initial_loglik: jnp.ndarray
+) -> TraversalBuffer:
+    """
+    Execute full post-order likelihood propagation.
+
+    Parameters
+    ----------
+    tree : TreeData
+
+    branch_child : jnp.ndarray
+        Child node per branch.
+
+        Shape
+        -----
+        (B,)
+
+    node_branches : jnp.ndarray
+        Mapping from nodes to incoming branches.
+
+        Shape
+        -----
+        (N, max_degree)
+
+    branch_transitions : jnp.ndarray
+        Spectral transition matrices.
+
+        Shape
+        -----
+        (B, M, M)
+
+    initial_loglik : jnp.ndarray
+        Initial node log-likelihoods.
+
+        Shape
+        -----
+        (N, M)
+
+    Returns
+    -------
+    buffer : TraversalBuffer
+    """
+
+    N = initial_loglik.shape[0]
+    B = branch_child.shape[0]
+    M = initial_loglik.shape[1]
+
+    buffer = TraversalBuffer(
+        node_loglik=initial_loglik,
+        branch_messages=jnp.zeros((B, M)),
+        node_scales=jnp.zeros((N,))
+    )
+
+    scan_inputs = (
+        branch_child,
+        node_branches,
+        branch_transitions,
+        tree.is_tip
+    )
+
+    node_indices = jnp.arange(N)
+
+    def scan_step(carry, node_idx):
+
+        step_data = (
+            scan_inputs[0],
+            scan_inputs[1],
+            scan_inputs[2],
+            scan_inputs[3],
+            node_idx
+        )
+
+        return traversal_step(carry, step_data)
+
+    final_buffer, _ = jax.lax.scan(
+        scan_step,
+        buffer,
+        node_indices
+    )
+
+    return final_buffer
+
+# ============================================================
+# Root Likelihood
+# ============================================================
+
+def compute_root_loglikelihood(
+    buffer: TraversalBuffer
+) -> float:
+    """
+    Compute final tree log-likelihood.
+
+    Parameters
+    ----------
+    buffer : TraversalBuffer
+
+    Returns
+    -------
+    loglik : float
+    """
+
+    root_vector = buffer.node_loglik[-1]
+
+    root_scale = jax.scipy.special.logsumexp(root_vector)
+
+    total_scale = jnp.sum(buffer.node_scales)
+
+    return root_scale + total_scale
