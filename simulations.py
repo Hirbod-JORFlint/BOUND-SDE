@@ -163,7 +163,8 @@ def simulate_sde_path(
     manifold : object
 
     dt : float
-
+        Base time step; each branch executes a single Euler step with
+        \\(\\Delta t = \\max(\\tau, dt)\\).
     steps : int
 
     Returns
@@ -260,7 +261,7 @@ def simulate_branch(
     drift_fn,
     diffusion_fn,
     manifold,
-    dt
+    dt,
 ):
     """
     Simulate trait evolution along one branch.
@@ -302,19 +303,16 @@ def simulate_branch(
         (d,)
     """
 
-    steps = max(1, int(jnp.ceil(float(branch_length) / dt)))
+    dt_branch = jnp.maximum(branch_length, dt)
 
-    path = simulate_sde_path(
+    return simulate_sde_step(
         key,
         x_parent,
         drift_fn,
         diffusion_fn,
         manifold,
-        dt,
-        steps
+        dt_branch
     )
-
-    return path[-1]
 
 # ============================================================
 # Tree Trait Simulation

@@ -92,18 +92,27 @@ requirements.txt # Python dependencies
 ## Quick Start
 
 1. **Install dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
+ ```bash
+ pip install -r requirements.txt
+ ```
 
 2. **Run tests** to verify installation:
    ```bash
    python -m pytest
    ```
+   or
+    ```bash
+    bash run_tests.sh
+    ```
 
 3. **Run the comprehensive demo**:
    ```bash
    python comprehensive_demo.py
+   ```
+
+4. **Generate an example dataset**:
+   ```bash
+   python scripts/generate_dataset.py --config configs/example_config.json --output data/example_dataset.npz
    ```
 
 ---
@@ -128,6 +137,11 @@ Use `main.py` for full pipelines:
   ```bash
   python main.py test
   ```
+
+ - **Generate example data**:
+   ```bash
+   python scripts/generate_dataset.py
+   ```
 
 ### Python API
 
@@ -177,6 +191,15 @@ Or test specific modules:
 ```bash
 python -m pytest tests/test_tree_ops.py
 ```
+
+Use `bash run_tests.sh` for the same suite with the provided helper.
+
+---
+
+## Example Configuration
+
+Sample configuration lives in `configs/example_config.json`. It encodes the tree topology, manifold type,
+and solver settings so you can reproduce dataset generation and fitting without building your own config.
 
 ---
 

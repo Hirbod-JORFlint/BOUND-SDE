@@ -1,0 +1,18 @@
+{
+  "manifold": {
+    "type": "interval",
+    "L": -1.0,
+    "U": 1.0
+  },
+  "spectral_dim": 8,
+  "dt": 0.05,
+  "optimizer": "adam",
+  "root_state": [0.0],
+  "parents": [-1, 0, 0],
+  "branch_lengths": [0.0, 0.2, 0.3],
+  "topo_order": [0, 1, 2],
+  "tips": [1, 2],
+  "drift": [0.1],
+  "diffusion": 0.4,
+  "boundary_dim": 0
+}

@@ -74,4 +74,4 @@ def test_vectorized_neg_loglik_runs():
         manifold,
         spectral_dim=1
     )
-    assert jnp.isscalar(val)
+    assert val.shape == ()
