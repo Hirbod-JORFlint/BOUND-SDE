@@ -203,6 +203,20 @@ and solver settings so you can reproduce dataset generation and fitting without 
 
 ---
 
+## Usage Demonstration
+
+Use `scripts/demo_usage.py` to generate a dataset, fit the model, and watch console logs for each step. The script
+prints the configuration path, dataset location, and subprocess return codes so you can trace the workflow.
+
+```bash
+python scripts/demo_usage.py --output-dir demo --steps 30
+```
+
+This produces `demo/demo_dataset.npz` and `demo/demo_params.npz` (plus any logs you enable). Inspect these files with
+`numpy.load` or feed them back into the fitting CLI.
+
+---
+
 ## Contributing
 
 Contributions welcome! Please:
