@@ -21,9 +21,21 @@ Mathematical notes (LaTeX):
 All functions accept and return JAX arrays. Small epsilons are used to maintain numerical stability.
 """
 
-from typing import Tuple
+from dataclasses import dataclass
+from typing import Any, Callable, Tuple
+import math
+
 import jax
 import jax.numpy as jnp
+from kernels import (
+    _multi_indices_leq,
+    interval_cosine_basis,
+    reflecting_diffusion_generator,
+    simplex_monomial_basis,
+    s1_fourier_basis,
+    s1_wrapped_ou_generator,
+    wright_fisher_generator,
+)
 
 
 ### --- S^1: angle utilities --- ###
@@ -572,3 +584,409 @@ def manifold_diffusion_generator(
         return drift_term + diff_term
 
     return jax.vmap(single_point)(x)
+
+
+def _pad_to_length(array, length, dtype=jnp.float32):
+    """
+    Pad or slice an array to a fixed length so it matches manifold dimension.
+
+    Parameters
+    ----------
+    array : array_like
+        Input vector.
+
+    length : int
+        Desired output length.
+
+    dtype : dtype
+
+    Returns
+    -------
+    padded : jnp.ndarray
+
+        Shape
+        -----
+        (length,)
+    """
+
+    array = jnp.asarray(array, dtype=dtype)
+
+    if length == 0:
+        return jnp.zeros((0,), dtype=dtype)
+
+    if array.size >= length:
+        return array[:length]
+
+    pad_size = length - array.size
+
+    padding = jnp.zeros((pad_size,), dtype=dtype)
+
+    return jnp.concatenate([array, padding], axis=0)
+
+
+def _scalar_from_params(array, default=0.0):
+    """
+    Return a scalar value for one-dimensional drift or diffusion.
+
+    Parameters
+    ----------
+    array : array_like
+        Parameter vector.
+
+    default : float
+        Fallback value when `array` is empty.
+
+    Returns
+    -------
+    scalar : jnp.ndarray
+        Shape ()
+    """
+
+    array = jnp.asarray(array)
+
+    if array.size == 0:
+        return jnp.array(default, dtype=array.dtype)
+
+    return array[0]
+
+
+def _simplex_degree_for_M(dplus1: int, M: int) -> int:
+    """
+    Select the minimal total degree such that simplex monomials span at least `M` basis functions.
+
+    Parameters
+    ----------
+    dplus1 : int
+        Dimension of barycentric coordinates.
+
+    M : int
+        Desired number of basis functions.
+
+    Returns
+    -------
+    degree : int
+    """
+
+    if M <= 0:
+        return 0
+
+    degree = 0
+
+    landmark = dplus1 - 1
+
+    while True:
+
+        count = _multi_indices_leq(degree, landmark).shape[0]
+
+        if count >= M:
+            return degree
+
+        degree += 1
+
+
+@dataclass
+class ManifoldSpec:
+    """
+    Descriptor bundling geometry-awareness for a spectral domain.
+    """
+
+    domain: str
+    dimension: int
+    sample_states_fn: Callable[[int, int], jnp.ndarray]
+    basis_fn: Callable[[jnp.ndarray, int], jnp.ndarray]
+    generator_fn: Callable[[Any, jnp.ndarray, int], jnp.ndarray]
+    project_fn: Callable[[jnp.ndarray], jnp.ndarray]
+
+    def sample_states(self, num_states: int, spectral_dim: int) -> jnp.ndarray:
+        """
+        Draw quadrature states for the manifold.
+        """
+        return self.sample_states_fn(num_states, spectral_dim)
+
+    def evaluate_basis(self, states: jnp.ndarray, spectral_dim: int) -> jnp.ndarray:
+        """
+        Evaluate the manifold-specific spectral basis.
+        """
+        return self.basis_fn(states, spectral_dim)
+
+    def apply_generator(self, params, states: jnp.ndarray, spectral_dim: int) -> jnp.ndarray:
+        """
+        Apply the infinitesimal generator to the basis.
+        """
+        return self.generator_fn(params, states, spectral_dim)
+
+    def project(self, x: jnp.ndarray) -> jnp.ndarray:
+        """
+        Project points back to the manifold after a simulation step.
+        """
+        return self.project_fn(x)
+
+
+def create_interval_manifold(L: float, U: float) -> ManifoldSpec:
+    """
+    Reflecting-boundary manifold on [L, U].
+    """
+
+    def sample_states(num_states, spectral_dim):
+        """
+        Sample uniform quadrature points on [L, U].
+
+        Returns
+        -------
+        states : jnp.ndarray
+            Shape (count,)
+        """
+
+        count = max(num_states, spectral_dim * 4, 256)
+
+        return jnp.linspace(L, U, count)
+
+    def basis(states, spectral_dim):
+        """
+        Evaluate reflecting cosine basis on the interval.
+
+        Returns
+        -------
+        phi : jnp.ndarray
+            Shape (..., spectral_dim)
+        """
+
+        K = max(spectral_dim - 1, 0)
+
+        phi = interval_cosine_basis(states, K, L, U)
+
+        return phi[..., :spectral_dim]
+
+    def generator(params, states, spectral_dim):
+        """
+        Apply the reflecting interval generator to the spectral basis.
+
+        Returns
+        -------
+        values : jnp.ndarray
+            Shape (..., spectral_dim)
+        """
+
+        mu = _scalar_from_params(params.drift, default=0.0)
+
+        sigma = _scalar_from_params(params.diffusion, default=1.0)
+
+        K = max(spectral_dim - 1, 0)
+
+        mu_fn = lambda _: mu
+
+        sigma_fn = lambda _: sigma
+
+        vals = reflecting_diffusion_generator(
+            states,
+            interval_cosine_basis,
+            K,
+            mu_fn,
+            sigma_fn,
+            L,
+            U
+        )
+
+        return vals[..., :spectral_dim]
+
+    def project_fn(x):
+        """
+        Project onto [L, U] via clipping.
+
+        Returns
+        -------
+        clipped : jnp.ndarray
+            Shape (...,)
+        """
+
+        return jnp.clip(x, L, U)
+
+    return ManifoldSpec(
+        domain="interval",
+        dimension=1,
+        sample_states_fn=sample_states,
+        basis_fn=basis,
+        generator_fn=generator,
+        project_fn=project_fn
+    )
+
+
+def create_circle_manifold() -> ManifoldSpec:
+    """
+    Circular manifold using the wrapped Ornsteinâ€“Uhlenbeck generator.
+    """
+
+    def sample_states(num_states, spectral_dim):
+        """
+        Uniformly sample angles on [0, 2Ï€).
+
+        Returns
+        -------
+        states : jnp.ndarray
+            Shape (count,)
+        """
+
+        count = max(num_states, spectral_dim * 4, 256)
+
+        return jnp.linspace(0.0, 2.0 * jnp.pi, count, endpoint=False)
+
+    def basis(states, spectral_dim):
+        """
+        Evaluate Fourier basis up to frequency K.
+
+        Returns
+        -------
+        phi : jnp.ndarray
+            Shape (..., spectral_dim)
+        """
+
+        K = int(math.ceil(max(spectral_dim - 1, 0) / 2.0))
+
+        phi = s1_fourier_basis(K, states)
+
+        return phi[..., :spectral_dim]
+
+    def generator(params, states, spectral_dim):
+        """
+        Apply the wrapped OU generator on the circle.
+
+        Returns
+        -------
+        values : jnp.ndarray
+            Shape (..., spectral_dim)
+        """
+
+        boundary = jnp.asarray(params.boundary_params)
+
+        if boundary.size >= 2:
+            kappa = boundary[0]
+            preferred = boundary[1]
+        elif boundary.size == 1:
+            kappa = boundary[0]
+            preferred = 0.0
+        else:
+            kappa = 0.0
+            preferred = 0.0
+
+        sigma = _scalar_from_params(params.diffusion, default=1.0)
+
+        K = int(math.ceil(max(spectral_dim - 1, 0) / 2.0))
+
+        vals = s1_wrapped_ou_generator(
+            states,
+            s1_fourier_basis,
+            K,
+            kappa,
+            preferred,
+            sigma
+        )
+
+        return vals[..., :spectral_dim]
+
+    def project_fn(x):
+        """
+        Wrap angles to [0, 2Ï€).
+
+        Returns
+        -------
+        wrapped : jnp.ndarray
+            Shape (...,)
+        """
+
+        return wrap_angle(x)
+
+    return ManifoldSpec(
+        domain="circle",
+        dimension=1,
+        sample_states_fn=sample_states,
+        basis_fn=basis,
+        generator_fn=generator,
+        project_fn=project_fn
+    )
+
+
+def create_simplex_manifold(dplus1: int, concentration: float = 1.0) -> ManifoldSpec:
+    """
+    Simplex manifold with Fisher geometry approximated via monomial basis.
+    """
+
+    def sample_states(num_states, spectral_dim):
+        """
+        Sample deterministic Dirichlet points inside the simplex.
+
+        Returns
+        -------
+        states : jnp.ndarray
+            Shape (count, dplus1)
+        """
+
+        count = max(num_states, spectral_dim * 4, 256)
+
+        key = jax.random.PRNGKey(0)
+
+        alpha = jnp.full((dplus1,), concentration)
+
+        return jax.random.dirichlet(key, alpha, shape=(count,))
+
+    def basis(states, spectral_dim):
+        """
+        Evaluate truncated simplex monomial basis of degree `degree`.
+
+        Returns
+        -------
+        phi : jnp.ndarray
+            Shape (..., spectral_dim)
+        """
+
+        degree = _simplex_degree_for_M(dplus1, spectral_dim)
+
+        phi = simplex_monomial_basis(degree, states)
+
+        return phi[..., :spectral_dim]
+
+    def generator(params, states, spectral_dim):
+        """
+        Apply the Wrightâ€“Fisher generator to the basis.
+
+        Returns
+        -------
+        values : jnp.ndarray
+            Shape (..., spectral_dim)
+        """
+
+        theta = _pad_to_length(params.boundary_params, dplus1)
+
+        theta = jnp.clip(theta, a_min=1e-6)
+
+        basis_fn = lambda x: basis(x, spectral_dim)
+
+        return wright_fisher_generator(
+            states,
+            basis_fn,
+            theta
+        )
+
+    def project_fn(x):
+        """
+        Re-normalize to the simplex interior.
+
+        Returns
+        -------
+        projected : jnp.ndarray
+            Shape (..., dplus1)
+        """
+
+        clipped = jnp.clip(x, a_min=1e-12)
+
+        summed = jnp.sum(clipped, axis=-1, keepdims=True)
+
+        return clipped / (summed + 1e-12)
+
+    return ManifoldSpec(
+        domain="simplex",
+        dimension=dplus1,
+        sample_states_fn=sample_states,
+        basis_fn=basis,
+        generator_fn=generator,
+        project_fn=project_fn
+    )

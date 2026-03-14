@@ -48,6 +48,8 @@ import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
 
+from manifolds import ManifoldSpec
+
 
 # ------------------------------------------------------------
 # Basis Evaluation
@@ -450,3 +452,69 @@ def branch_transition_matrix(
     T = eigenvectors @ D @ eigenvectors.T
 
     return T
+
+
+def compute_spectral_decomposition(
+    params,
+    manifold: ManifoldSpec,
+    spectral_dim: int,
+    num_states: int = None
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """
+    Build spectral eigenpairs for the generator defined on `manifold`.
+
+    The generator satisfies
+
+        \mathcal{L} \phi_k = \lambda_k \phi_k
+
+    and the transition operator is approximated as
+
+        T_t(x,y) \approx \sum_k e^{\lambda_k t} \phi_k(x) \phi_k(y).
+
+    Parameters
+    ----------
+    params : ModelParams-like
+        Parameters defining drift, diffusion, and boundaries.
+
+    manifold : ManifoldSpec
+        Geometry describing the trait domain.
+
+    spectral_dim : int
+        Number of spectral basis functions (M).
+
+    num_states : int, optional
+        Number of sample points used for Monte-Carlo inner products.
+
+    Returns
+    -------
+    eigenvalues : jnp.ndarray
+        Shape
+        -----
+        (M,)
+
+    eigenvectors : jnp.ndarray
+        Shape
+        -----
+        (M, M)
+
+    inv_eigenvectors : jnp.ndarray
+        Shape
+        -----
+        (M, M)
+    """
+
+    num_states = num_states or max(512, spectral_dim * 12, 256)
+
+    states = manifold.sample_states(num_states, spectral_dim)
+
+    basis_fn = lambda x: manifold.evaluate_basis(x, spectral_dim)
+
+    generator_fn = lambda x: manifold.apply_generator(params, x, spectral_dim)
+
+    A, G, _ = compute_generator_projection(states, basis_fn, generator_fn)
+
+    eigenvalues, eigenvectors = solve_spectral_decomposition(A, G)
+
+    inv_eigenvectors = jnp.linalg.inv(eigenvectors)
+
+    return eigenvalues, eigenvectors, inv_eigenvectors
