@@ -82,21 +82,121 @@ optimizers.py # Gradient descent and L-BFGS routines
 simulations.py # Forward SDE simulators on trees
 bridge_r.py # R interface (reticulate compatible)
 main.py # Pipeline execution and validation tests
-
+tests/ # Unit tests for all modules
+comprehensive_demo.py # Comprehensive demo script
+tree_actions_demo.py # Tree operations demo
+requirements.txt # Python dependencies
 
 ---
 
-## Installation
+## Quick Start
 
-Requirements:
+1. **Install dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-- Python ≥ 3.9  
-- JAX (CPU or GPU backend)  
-- NumPy, SciPy  
-- Optional: optax, matplotlib  
-- Optional (R side): reticulate  
+2. **Run tests** to verify installation:
+   ```bash
+   python -m pytest
+   ```
 
-Example installation:
+3. **Run the comprehensive demo**:
+   ```bash
+   python comprehensive_demo.py
+   ```
 
+---
+
+## Usage
+
+### Command-Line Interface
+
+Use `main.py` for full pipelines:
+
+- **Simulate traits**:
+  ```bash
+  python main.py simulate --config config.json --output traits.npz
+  ```
+
+- **Fit model parameters**:
+  ```bash
+  python main.py fit --data traits.npz --config config.json --output params.npz
+  ```
+
+- **Run tests**:
+  ```bash
+  python main.py test
+  ```
+
+### Python API
+
+Import modules for custom workflows:
+
+```python
+from tree_ops import build_tree_arrays
+from manifolds import create_circle_manifold
+from simulations import simulate_tree_traits
+from likelihood import likelihood_objective
+
+# Build tree
+tree = build_tree_arrays(parent_array, child_array, branch_lengths)
+
+# Define manifold
+manifold = create_circle_manifold()
+
+# Simulate or compute likelihood
+# ... (see comprehensive_demo.py for examples)
+```
+
+### R Integration
+
+Use `reticulate` to call from R:
+
+```r
+library(reticulate)
+source_python("bridge_r.py")
+
+# Convert R tree to JAX
+tree_data <- r_tree_to_arrays(edge_matrix, edge_lengths)
+
+# Compute likelihood
+loglik <- r_compute_likelihood(params, tree_data$parents, tree_data$branch_lengths, ...)
+```
+
+---
+
+## Testing
+
+Run the full test suite:
 ```bash
-pip install -r requirements.txt
+python -m pytest
+```
+
+Or test specific modules:
+```bash
+python -m pytest tests/test_tree_ops.py
+```
+
+---
+
+## Contributing
+
+Contributions welcome! Please:
+- Add tests for new features
+- Follow JAX best practices for vectorization
+- Update documentation
+
+---
+
+## License
+
+[Specify license, e.g., MIT]
+
+---
+
+## Citation
+
+If you use BOUND-SDE in your research, please cite:
+
+[Add citation details]
