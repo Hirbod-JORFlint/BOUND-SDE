@@ -68,13 +68,28 @@ def r_tree_to_arrays(edge, edge_length):
     child = edge[:, 1]
 
     N = int(np.max(edge))
+    num_nodes = N  # Nodes are 1 to N
 
-    parents = np.zeros(N + 1, dtype=np.int32)
-    branch_lengths = np.zeros(N + 1)
+    # Find root: node not in child
+    all_nodes = set(range(1, N + 1))
+    child_set = set(child)
+    root = (all_nodes - child_set).pop()
+
+    # Map R nodes (1 to N) to 0 to N-1, with root as 0
+    node_map = {}
+    node_map[root] = 0
+    counter = 1
+    for node in range(1, N + 1):
+        if node != root:
+            node_map[node] = counter
+            counter += 1
+
+    parents = np.full(num_nodes, -1, dtype=np.int32)
+    branch_lengths = np.zeros(num_nodes)
 
     for p, c, l in zip(parent, child, edge_length):
-        parents[c] = p
-        branch_lengths[c] = l
+        parents[node_map[c]] = node_map[p]
+        branch_lengths[node_map[c]] = l
 
     return {
         "parents": jnp.array(parents),
@@ -307,7 +322,7 @@ def r_simulate_traits(
 
     traits = simulate_tree_traits(
         key,
-        jnp.array(root_state),
+        jnp.atleast_1d(root_state),
         jnp.array(parents),
         jnp.array(branch_lengths),
         jnp.array(topo_order),
