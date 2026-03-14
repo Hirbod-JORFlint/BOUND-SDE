@@ -25,7 +25,7 @@ branch_lengths <- tree_arrays$branch_lengths
 # Step 3: Convert trait data to JAX array
 traits_jax <- r_traits_to_jax(trait_data)
 
-# Now, to demonstrate, let's assume we want to fit a model on a circle manifold
+# Now, to demonstrate, let's assume we want to fit a model on an interval manifold
 # First, we need to import manifolds and other modules
 # Since source_python loaded bridge_r.py, we can access imported modules via py$
 
@@ -71,3 +71,31 @@ print(dim(simulated_traits_r))
 
 # For fitting, it's more complex, but this shows back and forth
 # To fit, you would need to define node_loglik based on data, then optimize params using r_compute_likelihood
+
+# Example of basic fitting: optimize the kappa parameter (strength of attraction to preferred state) assuming fixed preferred=0 and sigma=0.5
+# Note: This is a placeholder; proper fitting requires setting node_loglik based on observed trait_data at tips
+
+# Objective function to minimize (negative log-likelihood)
+objective <- function(kappa_val) {
+  # params: kappa, preferred, sigma
+  params <- c(kappa_val, 0, 0.5)
+
+  # Simplified: set node_loglik to zeros (not correct for real fitting)
+  # In practice, for tips, set to log of spectral basis evaluated at data
+  node_loglik <- matrix(0, nrow = length(parents), ncol = spectral_dim)
+
+  # Compute likelihood
+  lik <- r_compute_likelihood(params, parents, branch_lengths, node_loglik, manifold, spectral_dim)
+
+  return(-lik)  # Return negative log-likelihood for minimization
+}
+
+# Optimize using R's optim
+initial_kappa <- 0.1
+fit_result <- optim(initial_kappa, objective, method = "BFGS")
+
+fitted_kappa <- fit_result$par
+print("Fitted kappa parameter:")
+print(fitted_kappa)
+print("Optimization converged:")
+print(fit_result$convergence == 0)

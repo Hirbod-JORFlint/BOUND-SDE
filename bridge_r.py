@@ -267,7 +267,7 @@ def r_compute_likelihood(
     node_loglik = jnp.array(node_loglik)
 
     N = parents.shape[0]
-    postorder = jnp.arange(N)
+    postorder = r_get_postorder(parents)
     root_index = int(jnp.where(parents == -1)[0][0]) if jnp.any(parents == -1) else 0
     tree = TreeData(
         postorder_nodes=postorder,
@@ -276,7 +276,7 @@ def r_compute_likelihood(
         branch_lengths=branch_lengths,
         root_index=root_index,
     )
-    shape = ParamShape(parents.shape[0], 0, 0, node_loglik.shape[-1])
+    shape = ParamShape(parents.shape[0], 1, 0, 1)
 
     val = vectorized_neg_loglik(
         params,
@@ -377,5 +377,6 @@ import manifolds
 import __main__
 
 __main__.create_circle_manifold = manifolds.create_circle_manifold
+__main__.create_interval_manifold = manifolds.create_interval_manifold
 __main__._constant_drift = _constant_drift
 __main__._constant_diffusion = _constant_diffusion
