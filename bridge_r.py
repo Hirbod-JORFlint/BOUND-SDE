@@ -101,6 +101,53 @@ def r_traits_to_jax(traits):
 
     return jnp.array(traits_np)
 
+
+def r_get_postorder(parents):
+    """
+    Compute postorder node order from parent array.
+
+    Parameters
+    ----------
+    parents : array_like
+
+        Shape
+        -----
+        (N,)
+
+    Returns
+    -------
+    postorder : jnp.ndarray
+        Shape
+        -----
+        (N,)
+    """
+
+    parents = jnp.array(parents)
+    N = parents.shape[0]
+    children = [[] for _ in range(N)]
+
+    for idx, p in enumerate(parents.tolist()):
+        if p >= 0:
+            children[int(p)].append(idx)
+
+    root_indices = jnp.where(parents == -1)[0]
+    root = int(root_indices[0]) if root_indices.size > 0 else 0
+
+    visited = [False] * N
+    order = []
+
+    def dfs(node):
+        if visited[node]:
+            return
+        visited[node] = True
+        for child in children[node]:
+            dfs(int(child))
+        order.append(node)
+
+    dfs(root)
+
+    return jnp.array(order, dtype=jnp.int32)
+
 # ============================================================
 # R-accessible likelihood function
 # ============================================================

@@ -9,6 +9,7 @@ from bridge_r import (
     r_traits_to_jax,
     r_compute_likelihood,
     r_simulate_traits,
+    r_get_postorder,
 )
 
 
@@ -61,3 +62,11 @@ def test_r_simulate_traits_monkeypatched(monkeypatch):
         dt=0.1,
     )
     assert isinstance(result, np.ndarray)
+
+
+def test_r_get_postorder_simple():
+    parents = np.array([-1, 0, 0])
+    postorder = r_get_postorder(parents)
+    assert hasattr(postorder, "shape")
+    assert postorder[0] in (1, 2)
+    assert postorder[-1] == 0
