@@ -19,9 +19,9 @@ STANDARDS: * O(N) efficiency via vectorization. All math in comments must use La
 
     simulations.py: [In Progress]
 
-    bridge_r.py: [Not Started]
+    bridge_r.py: [In Progress]
 
     main.py: [Not Started]
 
-CURRENT PROGRESS: Part 24 of 30.
+CURRENT PROGRESS: Part 25 of 30.
 ACTIVE TARGET: File [Number]: [Name].
