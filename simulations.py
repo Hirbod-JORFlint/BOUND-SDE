@@ -302,7 +302,7 @@ def simulate_branch(
         (d,)
     """
 
-    steps = jnp.maximum(1, jnp.int32(branch_length / dt))
+    steps = max(1, int(jnp.ceil(float(branch_length) / dt)))
 
     path = simulate_sde_path(
         key,

@@ -265,7 +265,7 @@ def neg_loglik(
 
 class ParamShape:
     """
-    Stores shapes of parameter components.
+    Stores component sizes for flattened parameters.
 
     Attributes
     ----------
@@ -366,8 +366,6 @@ def unflatten_params(
     i += shape.boundary_dim
 
     prior = vec[i : i + shape.prior_dim]
-
-    from likelihood import ModelParams
 
     return ModelParams(
         drift=drift,
@@ -670,8 +668,6 @@ def vectorized_neg_loglik_batch(
     -------
     value : float
     """
-
-    from likelihood import transform_params
 
     params = transform_params(vec, shape)
 

@@ -8,6 +8,12 @@ import numpy as np
 
 from typing import Dict
 
+from likelihood import (
+    vectorized_neg_loglik,
+    ParamShape,
+    TreeData,
+)
+
 # ============================================================
 # Convert R phylo tree to internal arrays
 # ============================================================
@@ -140,19 +146,27 @@ def r_compute_likelihood(
     loglik : float
     """
 
-    from likelihood import vectorized_neg_loglik
-
     params = jnp.array(params)
-
     parents = jnp.array(parents)
     branch_lengths = jnp.array(branch_lengths)
     node_loglik = jnp.array(node_loglik)
 
+    N = parents.shape[0]
+    postorder = jnp.arange(N)
+    root_index = int(jnp.where(parents == -1)[0][0]) if jnp.any(parents == -1) else 0
+    tree = TreeData(
+        postorder_nodes=postorder,
+        parent_index=parents,
+        parent_branch=jnp.arange(N),
+        branch_lengths=branch_lengths,
+        root_index=root_index,
+    )
+    shape = ParamShape(parents.shape[0], 0, 0, node_loglik.shape[-1])
+
     val = vectorized_neg_loglik(
         params,
-        None,
-        parents,
-        branch_lengths,
+        shape,
+        tree,
         node_loglik,
         manifold,
         spectral_dim,
