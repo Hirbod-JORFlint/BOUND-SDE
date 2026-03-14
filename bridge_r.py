@@ -5,6 +5,11 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+import sys
+import os
+
+# Add the current directory to sys.path for relative imports
+sys.path.append(os.path.dirname(__file__))
 
 from typing import Dict
 
@@ -148,6 +153,54 @@ def r_get_postorder(parents):
 
     return jnp.array(order, dtype=jnp.int32)
 
+
+def r_get_preorder(parents):
+    """
+    Compute preorder node order from parent array.
+
+    Parameters
+    ----------
+    parents : array_like
+
+        Shape
+        -----
+        (N,)
+
+    Returns
+    -------
+    preorder : jnp.ndarray
+        Shape
+        -----
+        (N,)
+    """
+
+    parents = jnp.array(parents)
+    N = parents.shape[0]
+    children = [[] for _ in range(N)]
+
+    for idx, p in enumerate(parents.tolist()):
+        if p >= 0:
+            children[int(p)].append(idx)
+
+    root_indices = jnp.where(parents == -1)[0]
+    root = int(root_indices[0]) if root_indices.size > 0 else 0
+
+    visited = [False] * N
+    order = []
+
+    def dfs(node):
+        if visited[node]:
+            return
+        visited[node] = True
+        order.append(node)
+        for child in children[node]:
+            dfs(int(child))
+
+    dfs(root)
+
+    return jnp.array(order, dtype=jnp.int32)
+
+
 # ============================================================
 # R-accessible likelihood function
 # ============================================================
@@ -266,6 +319,21 @@ def r_simulate_traits(
 
     return np.array(traits)
 
+def _constant_drift(value: float):
+    def fn(x):
+        return jnp.full_like(x, value)
+
+    return fn
+
+
+def _constant_diffusion(value: float):
+    def fn(x):
+        d = x.shape[-1]
+        return jnp.eye(d) * value
+
+    return fn
+
+
 # ============================================================
 # JAX → NumPy conversion
 # ============================================================
@@ -285,3 +353,14 @@ def to_numpy(x):
 
     return np.asarray(x)
 
+
+# ============================================================
+# Expose functions to __main__ for reticulate access
+# ============================================================
+
+import manifolds
+import __main__
+
+__main__.create_circle_manifold = manifolds.create_circle_manifold
+__main__._constant_drift = _constant_drift
+__main__._constant_diffusion = _constant_diffusion

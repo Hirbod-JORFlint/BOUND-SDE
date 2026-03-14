@@ -8,7 +8,13 @@ from manifolds import (
 )
 from simulations import simulate_tree_traits
 from tree_ops import generate_random_tree
-
+from optimizers import run_adam, run_lbfgs
+from pruning import (
+    compute_branch_transitions,
+    propagate_branch_likelihood,
+    normalize_all_nodes,
+    compute_root_loglik,
+)
 
 def _constant_drift(value: float):
     def fn(x):
@@ -23,6 +29,68 @@ def _constant_diffusion(value: float):
         return jnp.eye(d) * value
 
     return fn
+
+def demo_optimizers():
+    """
+    Demonstrate `run_adam` and `run_lbfgs` on a simple quadratic.
+    """
+
+    def objective(params):
+        # Simple convex quadratic: f(x) = sum((x - 1)^2)
+        loss = jnp.sum((params - 1.0) ** 2)
+        grad = 2.0 * (params - 1.0)
+        return loss, grad
+
+    init = jnp.array([3.0, -2.0, 0.5])
+
+    # Adam optimization
+    adam_params, adam_losses = run_adam(init, objective, num_steps=50)
+    print("Adam final params:", adam_params)
+    print("Adam final loss:", float(adam_losses[-1]))
+
+    # L-BFGS optimization
+    lbfgs_params, lbfgs_losses = run_lbfgs(init, objective, num_steps=20)
+    print("L-BFGS final params:", lbfgs_params)
+    print("L-BFGS final loss:", float(lbfgs_losses[-1]))
+
+
+def demo_pruning():
+    """
+    Demonstrate low-level pruning utilities on a tiny tree.
+    """
+
+    # Two-node tree: root (0) -> child (1)
+    parents = jnp.array([-1, 0], dtype=jnp.int32)
+    branch_lengths = jnp.array([0.0, 0.5], dtype=jnp.float32)
+
+    # Dummy node log-likelihoods (N=2, M=2)
+    node_loglik = jnp.array([[0.0, 0.0], [0.1, -0.2]])
+
+    # Simple 2D eigen system (identity eigenbasis)
+    eigenvalues = jnp.array([-1.0, -2.0])
+    eigenvectors = jnp.eye(2)
+
+    # Single non-root branch (index 1)
+    transitions = compute_branch_transitions(
+        eigenvalues,
+        branch_lengths[1:],  # shape (1,)
+    )  # shape (1, 2, 2)
+
+    # Propagate likelihood from child (node 1) to parent (node 0)
+    child_loglik = node_loglik[1]
+    transition = transitions[0]
+    message = propagate_branch_likelihood(child_loglik, transition)
+
+    # Update parent node and normalize both nodes
+    updated_node_loglik = node_loglik.at[0].set(node_loglik[0] + message)
+    normalized, scales = normalize_all_nodes(updated_node_loglik)
+
+    # Uniform prior at root
+    root_prior = jnp.array([0.5, 0.5])
+    root_index = int(jnp.where(parents == -1)[0][0])
+    loglik = compute_root_loglik(normalized, scales, root_index, root_prior)
+
+    print("Pruning demo log-likelihood:", float(loglik))
 
 
 if __name__ == "__main__":
@@ -73,3 +141,6 @@ if __name__ == "__main__":
     )
     print(traits)
     print("Simulated traits shape:", traits.shape)
+
+    demo_optimizers()
+    demo_pruning()
