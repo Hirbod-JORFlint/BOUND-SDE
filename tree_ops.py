@@ -404,3 +404,184 @@ def normalize_all_nodes(node_loglik: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndar
 
     normalized, scales = jax.vmap(normalize_log_likelihood)(node_loglik)
     return normalized, scales
+
+
+def generate_random_tree(
+    num_taxa: int,
+    seed: int = 0,
+    min_branch_length: float = 0.05,
+    max_branch_length: float = 0.5,
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    r"""
+    Generate a simple random rooted tree topology for simulations.
+
+    The tree is constructed incrementally: starting from a single root node,
+    each new node attaches to a uniformly chosen existing node. This ensures
+    an acyclic rooted tree where parents always have lower indices than
+    their children.
+
+    Parameters
+    ----------
+    num_taxa : int
+        Number of nodes in the tree (including the root).
+
+    seed : int, optional
+        Seed for the PRNG used to sample topology and branch lengths.
+
+    min_branch_length : float, optional
+        Lower bound for uniform branch length sampling.
+
+    max_branch_length : float, optional
+        Upper bound for uniform branch length sampling.
+
+    Returns
+    -------
+    parents : jnp.ndarray
+        Parent index for each node (root has -1).
+
+        Shape
+        -----
+        (N,)
+
+    branch_lengths : jnp.ndarray
+        Branch length associated with each node's connection to its parent.
+        The root has length 0.0.
+
+        Shape
+        -----
+        (N,)
+
+    topo_order : jnp.ndarray
+        A valid topological ordering of the nodes (parents precede children).
+        For this construction this is simply ``jnp.arange(N)``.
+
+        Shape
+        -----
+        (N,)
+    """
+
+    if num_taxa <= 0:
+        raise ValueError("num_taxa must be positive")
+
+    key = jax.random.PRNGKey(seed)
+
+    # Parents: root has parent -1, subsequent nodes attach to any previous node.
+    parents_list = [-1]
+    lengths_list = [0.0]
+
+    for i in range(1, num_taxa):
+        key, key_parent, key_length = jax.random.split(key, 3)
+        parent_idx = int(jax.random.randint(key_parent, shape=(), minval=0, maxval=i))
+        length = float(
+            jax.random.uniform(
+                key_length,
+                shape=(),
+                minval=min_branch_length,
+                maxval=max_branch_length,
+            )
+        )
+        parents_list.append(parent_idx)
+        lengths_list.append(length)
+
+    parents = jnp.array(parents_list, dtype=jnp.int32)
+    branch_lengths = jnp.array(lengths_list, dtype=jnp.float32)
+    topo_order = jnp.arange(num_taxa, dtype=jnp.int32)
+
+    return parents, branch_lengths, topo_order
+
+
+def get_root_index(tree: TreeData) -> int:
+    r"""
+    Return the root node index for a `TreeData` object.
+
+    The root is defined as the unique node with parent -1. If multiple
+    candidates exist, the smallest index is returned.
+    """
+
+    roots = jnp.where(tree.parent == -1)[0]
+    return int(roots[0]) if roots.size > 0 else 0
+
+
+def get_tip_indices(tree: TreeData) -> jnp.ndarray:
+    r"""
+    Return the indices of tip (leaf) nodes.
+
+    Parameters
+    ----------
+    tree : TreeData
+
+    Returns
+    -------
+    tips : jnp.ndarray
+        Indices where ``tree.is_tip`` is True.
+
+        Shape
+        -----
+        (T,)
+    """
+
+    return jnp.where(tree.is_tip)[0].astype(jnp.int32)
+
+
+def count_tips(tree: TreeData) -> int:
+    r"""
+    Count the number of tip (leaf) nodes in the tree.
+    """
+
+    return int(tree.is_tip.sum())
+
+
+def tree_size(tree: TreeData) -> int:
+    r"""
+    Return the number of nodes in the tree.
+    """
+
+    return int(tree.parent.shape[0])
+
+
+def num_branches(tree: TreeData) -> int:
+    r"""
+    Return the number of branches (non-root edges) in the tree.
+    """
+
+    return int(tree.branch_child.shape[0])
+
+
+def extract_edge_list(tree: TreeData) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    r"""
+    Extract parent, child, and branch length arrays from a `TreeData` object.
+
+    This is the inverse of `build_tree_arrays` up to node ordering.
+
+    Parameters
+    ----------
+    tree : TreeData
+
+    Returns
+    -------
+    parent : jnp.ndarray
+        Parent index for each edge.
+
+        Shape
+        -----
+        (E,)
+
+    child : jnp.ndarray
+        Child index for each edge.
+
+        Shape
+        -----
+        (E,)
+
+    branch_length : jnp.ndarray
+        Branch length for each edge.
+
+        Shape
+        -----
+        (E,)
+    """
+
+    child = tree.branch_child.astype(jnp.int32)
+    parent = tree.branch_parent.astype(jnp.int32)
+    branch_length = tree.branch_length[child]
+    return parent, child, branch_length
