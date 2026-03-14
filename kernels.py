@@ -1,51 +1,45 @@
-"""kernels.py: SDE infinitesimal generators and spectral basis functions.
-
-Functions are pure, JAX-native, and document the targeted differential
-operators with LaTeX in the docstrings.
-"""
+"""SDE kernels: basis evaluations and generator helpers for constrained domains."""
 
 from itertools import product
 from typing import Callable
+import math
 
 import jax
 import jax.numpy as jnp
+import jax.scipy.special as jsp
 
 
 def interval_cosine_basis(x: jnp.ndarray, K: int, L: float, U: float) -> jnp.ndarray:
-    """
-    Reflecting-boundary cosine basis on [L,U].
+    r"""
+    Cosine Neumann basis on the reflecting interval [L, U].
 
     Mathematical intent
     ------------------
     \[
-        \phi_0(x) = \frac{1}{\sqrt{U-L}},\quad
-        \phi_k(x) = \sqrt{\frac{2}{U-L}}\cos\left(\frac{k\pi(x-L)}{U-L}\right),
-        \quad k\geq 1
+        \phi_0(x) = \frac{1}{U-L},\quad
+        \phi_k(x) = \frac{2}{U-L}\cos\left(\frac{k\pi(x-L)}{U-L}\right),\quad k\geq 1.
     \]
-    satisfies \(\partial_x \phi_k(L)=\partial_x \phi_k(U)=0\).
 
     Parameters
     ----------
     x : jnp.ndarray
-        Points in the interval [L, U].
-
+        Points lying in [L, U].
         Shape
         -----
         (...,)
 
     K : int
-        Number of cosine modes beyond the constant.
+        Highest oscillatory mode.
 
     L : float
-        Lower boundary.
+        Lower reflecting boundary.
 
     U : float
-        Upper boundary.
+        Upper reflecting boundary.
 
     Returns
     -------
     basis_vals : jnp.ndarray
-
         Shape
         -----
         (..., K+1)
@@ -53,34 +47,35 @@ def interval_cosine_basis(x: jnp.ndarray, K: int, L: float, U: float) -> jnp.nda
 
     x = jnp.asarray(x)
     width = U - L
-    phi0 = jnp.full_like(x, 1.0 / jnp.sqrt(width))
-
+    if width <= 0:
+        raise ValueError("Upper bound U must be greater than lower bound L.")
+    base = jnp.full(x.shape, 1.0 / width)
     if K == 0:
-        return phi0[..., None]
+        return base[..., None]
 
-    ks = jnp.arange(1, K + 1)
-    angles = jnp.expand_dims(x - L, axis=-1) * (ks * jnp.pi / width)
-    cos_terms = jnp.cos(angles) * jnp.sqrt(2.0 / width)
-    return jnp.concatenate([phi0[..., None], cos_terms], axis=-1)
+    ks = jnp.arange(1, K + 1, dtype=x.dtype)
+    angles = (x[..., None] - L) * (ks * jnp.pi / width)
+    cos_terms = jnp.cos(angles) * (2.0 / width)
+    return jnp.concatenate([base[..., None], cos_terms], axis=-1)
 
 
 def interval_laplacian_eigenvalues(K: int, sigma: float, L: float, U: float) -> jnp.ndarray:
-    """
-    Eigenvalues of the reflecting Laplacian on [L,U].
+    r"""
+    Eigenvalues of the reflecting Laplacian on [L, U].
 
     Mathematical intent
     ------------------
     \[
-        \lambda_k = -\frac{\sigma^2}{2}\left(\frac{k\pi}{U-L}\right)^2,\quad k=0,\dots,K
+        \lambda_k = -\frac{\sigma^2}{2}\left(\frac{k\pi}{U-L}\right)^2,\quad k=0,\dots,K.
     \]
 
     Parameters
     ----------
     K : int
-        Highest cosine index.
+        Largest cosine index.
 
     sigma : float
-        Diffusion coefficient.
+        Diffusion amplitude.
 
     L : float
         Lower boundary.
@@ -91,67 +86,97 @@ def interval_laplacian_eigenvalues(K: int, sigma: float, L: float, U: float) -> 
     Returns
     -------
     eigenvalues : jnp.ndarray
-
         Shape
         -----
         (K+1,)
     """
 
-    width = U - L
-    ks = jnp.arange(0, K + 1)
+    width = jnp.array(U - L, dtype=jnp.float32)
+    ks = jnp.arange(0, K + 1, dtype=jnp.float32)
     return -0.5 * sigma**2 * (ks * jnp.pi / width) ** 2
 
 
 def s1_fourier_basis(theta: jnp.ndarray, K: int) -> jnp.ndarray:
-    """
-    2K+1 Fourier basis functions on S^1 (constant + sin/cos pairs).
+    r"""
+    Fourier basis functions on the unit circle.
 
     Mathematical intent
     ------------------
     \[
         \phi_0(\theta) = \frac{1}{\sqrt{2\pi}},\quad
-        \phi_{2k-1} = \sqrt{\frac{1}{\pi}}\cos(k\theta),\quad
-        \phi_{2k} = \sqrt{\frac{1}{\pi}}\sin(k\theta).
+        \phi_{2k-1}(\theta) = \sqrt{\frac{1}{\pi}}\cos(k\theta),\quad
+        \phi_{2k}(\theta) = \sqrt{\frac{1}{\pi}}\sin(k\theta).
     \]
 
     Parameters
     ----------
     theta : jnp.ndarray
-        Angles on S^1 in radians.
-
+        Angles in radians.
         Shape
         -----
         (...,)
 
     K : int
-        Highest sinusoidal frequency to include.
+        Highest frequency.
 
     Returns
     -------
     basis_vals : jnp.ndarray
-
         Shape
         -----
         (..., 2K+1)
     """
 
     theta = jnp.asarray(theta)
-    base = jnp.full(theta.shape, 1.0 / jnp.sqrt(2 * jnp.pi))
-
+    base = jnp.full(theta.shape, 1.0 / jnp.sqrt(2.0 * jnp.pi))
     if K == 0:
         return base[..., None]
 
-    ks = jnp.arange(1, K + 1)
-    angles = jnp.expand_dims(theta, axis=-1) * ks
+    ks = jnp.arange(1, K + 1, dtype=theta.dtype)
+    angles = theta[..., None] * ks
     cos_terms = jnp.cos(angles) / jnp.sqrt(jnp.pi)
     sin_terms = jnp.sin(angles) / jnp.sqrt(jnp.pi)
-    interleaved = jnp.stack([cos_terms, sin_terms], axis=-1).reshape(theta.shape + (2 * K,))
+    stacked = jnp.stack([cos_terms, sin_terms], axis=-1)
+    interleaved = stacked.reshape(theta.shape + (2 * K,))
     return jnp.concatenate([base[..., None], interleaved], axis=-1)
 
 
-def _multi_indices_leq(degree: int, dim: int) -> jnp.ndarray:
+def s1_laplace_eigenvalues(K: int, sigma: float) -> jnp.ndarray:
+    r"""
+    Laplace eigenvalues on S^1 aligned with `s1_fourier_basis`.
+
+    Mathematical intent
+    ------------------
+    \[
+        \lambda_0=0,\quad \lambda_{\text{cos/sin}} = -\frac{\sigma^2}{2}k^2,\quad k=1,\dots,K.
+    \]
+
+    Parameters
+    ----------
+    K : int
+        Highest sine/cosine frequency.
+
+    sigma : float
+        Diffusion amplitude.
+
+    Returns
+    -------
+    eigenvalues : jnp.ndarray
+        Shape
+        -----
+        (2K+1,)
     """
-    Enumerate multi-indices α in ℕ^{d+1} satisfying sum(α) ≤ degree.
+
+    ks = jnp.arange(1, K + 1, dtype=jnp.float32)
+    pair_vals = -0.5 * sigma**2 * ks**2
+    repeated = jnp.repeat(pair_vals, 2)
+    zero = jnp.array([0.0], dtype=repeated.dtype)
+    return jnp.concatenate([zero, repeated], axis=0)
+
+
+def _multi_indices_leq(degree: int, dim: int) -> jnp.ndarray:
+    r"""
+    Multi-indices \(\alpha\) with \(\sum_i \alpha_i \leq \text{degree}\) in \(\mathbb{N}^{d+1}\).
 
     Parameters
     ----------
@@ -159,186 +184,185 @@ def _multi_indices_leq(degree: int, dim: int) -> jnp.ndarray:
         Total degree bound.
 
     dim : int
-        Equivalent to d (simplex dimension d = dim).
+        Simplex dimension \(d := \text{dim}\).
 
     Returns
     -------
     indices : jnp.ndarray
-
         Shape
         -----
         (M, dim+1)
     """
 
     tuples = [t for t in product(range(degree + 1), repeat=dim + 1) if sum(t) <= degree]
-    return jnp.array(tuples, dtype=jnp.int32)
+    return jnp.asarray(tuples, dtype=jnp.int32)
 
 
-def simplex_monomial_basis(p: jnp.ndarray, degree: int) -> jnp.ndarray:
-    """
-    Monomial basis on the probability simplex Δ^d.
+def _simplex_dirichlet_gram(
+    alphas: jnp.ndarray, dplus1: int, eps: float = 1e-6, dtype: jnp.dtype = jnp.float32
+) -> jnp.ndarray:
+    r"""
+    Gram matrix for monomials under a uniform Dirichlet weight on Δ^d.
 
     Mathematical intent
     ------------------
     \[
-        \phi_\alpha(p) = \prod_{i=0}^d p_i^{\alpha_i},\quad \sum_i\alpha_i \leq \text{degree}.
+        G_{ij} = \int_{\Delta^d} p^{\alpha_i+\alpha_j}\,dp = \frac{\prod_{k}\Gamma(1+\alpha_{i,k}+\alpha_{j,k})}{\Gamma(d+1+\sum_k(\alpha_{i,k}+\alpha_{j,k}))}.
     \]
 
     Parameters
     ----------
-    p : jnp.ndarray
-        Points with non-negative entries summing to one.
+    alphas : jnp.ndarray
+        Multi-indices shape (M, d+1).
 
+    dplus1 : int
+        Number of components in the simplex.
+
+    eps : float
+        Diagonal regularizer to ensure positive definiteness.
+
+    Returns
+    -------
+    gram : jnp.ndarray
+        Shape
+        -----
+        (M, M)
+    """
+
+    alphas = jnp.asarray(alphas, dtype=dtype)
+    expanded = alphas[:, None, :] + alphas[None, :, :]
+    totals = jnp.sum(expanded, axis=-1)
+    log_num = jnp.sum(jsp.gammaln(1.0 + expanded), axis=-1)
+    log_den = jsp.gammaln(dplus1 + totals)
+    gram = jnp.exp(log_num - log_den)
+    normalization = math.factorial(dplus1 - 1) if dplus1 > 1 else 1
+    gram = gram * normalization
+    diag = jnp.eye(gram.shape[0], dtype=dtype) * eps
+    return gram + diag
+
+
+def simplex_monomial_basis(p: jnp.ndarray, degree: int) -> jnp.ndarray:
+    r"""
+    Orthonormal polynomial basis on the probability simplex Δ^d for degree ≤ 2.
+
+    Mathematical intent
+    ------------------
+    Polynomials are orthonormalized under the Dirichlet(1) weight using Gram–Schmidt.
+
+    Parameters
+    ----------
+    p : jnp.ndarray
+        Simplex points with positive entries summing to one.
         Shape
         -----
         (..., d+1)
 
     degree : int
-        Max total degree.
+        Degree bound (maximum 2).
 
     Returns
     -------
     basis_vals : jnp.ndarray
-
         Shape
         -----
         (..., M)
     """
+
+    if degree > 2:
+        raise NotImplementedError("Simplex basis currently supports degree ≤ 2.")
 
     p = jnp.asarray(p)
     dplus1 = p.shape[-1]
-    dims = dplus1 - 1
-    alphas = _multi_indices_leq(degree, dims)
-    powers = jnp.power(p[..., None, :], alphas[None, :, :])
-    return jnp.prod(powers, axis=-1)
+    alphas_int = _multi_indices_leq(degree, dplus1 - 1)
+    monomials = jnp.prod(jnp.power(p[..., None, :], alphas_int[None, :, :]), axis=-1)
+    dtype = p.dtype
+    alphas_float = alphas_int.astype(dtype)
+    gram = _simplex_dirichlet_gram(alphas_float, dplus1, eps=1e-6, dtype=dtype)
+    eigvals, eigvecs = jnp.linalg.eigh(gram)
+    safe = 1e-12
+    inv_sqrt = jnp.where(eigvals > safe, 1.0 / jnp.sqrt(eigvals), 0.0)
+    transform = eigvecs @ (inv_sqrt[:, None] * eigvecs.T)
+    basis = jnp.matmul(monomials, transform)
+    return basis
 
 
-def s1_laplace_beltrami(theta: jnp.ndarray, sigma: float, K: int) -> jnp.ndarray:
-    """
-    Apply the Laplace–Beltrami operator to the Fourier basis.
-
-    Mathematical intent
-    ------------------
-    \(\mathcal{L} f = \frac{\sigma^2}{2}\frac{d^2f}{d\theta^2}\),
-    so \(\mathcal{L}\phi_k = -\frac{\sigma^2}{2}k^2\phi_k\).
+def apply_generator_batch(
+    generator_fn: Callable[..., jnp.ndarray],
+    states: jnp.ndarray,
+    basis_fn: Callable[..., jnp.ndarray],
+    *args,
+) -> jnp.ndarray:
+    r"""
+    Vectorize the generator applied to a basis evaluated at states.
 
     Parameters
     ----------
-    theta : jnp.ndarray
-        Evaluation angles.
-
+    generator_fn : Callable
+        Function computing \(L\phi\) per state/basis row.
+    states : jnp.ndarray
+        Points where the generator is evaluated.
         Shape
         -----
-        (...,)
-
-    sigma : float
-        Diffusion amplitude.
-
-    K : int
-        Highest frequency index.
+        (N, ...)
+    basis_fn : Callable
+        Basis evaluator returning shape (..., M).
+    *args : Any
+        Additional arguments forwarded to both basis_fn and generator_fn.
 
     Returns
     -------
     values : jnp.ndarray
-
         Shape
         -----
-        (..., 2K+1)
+        (N, M)
     """
 
-    freqs = jnp.concatenate([jnp.array([0]), jnp.repeat(jnp.arange(1, K + 1), 2)])
-    basis_vals = s1_fourier_basis(theta, K)
-    eigen = -0.5 * sigma**2 * freqs**2
-    return basis_vals * eigen
+    states_array = jnp.asarray(states)
+    basis_vals = basis_fn(states_array, *args)
 
+    def _apply(state, basis_row):
+        return generator_fn(state, basis_row, *args)
 
-def wright_fisher_generator(p: jnp.ndarray, theta: jnp.ndarray, degree: int) -> jnp.ndarray:
-    """
-    Apply the Wright–Fisher generator to simplex monomials.
-
-    Mathematical intent
-    ------------------
-    \[
-        Lf(p) = \sum_i(\theta_i - p_i\Theta)\partial_i f + \frac{1}{2}\sum_{i,j}p_i(\delta_{ij}-p_j)\partial_{ij} f,
-        \quad \Theta = \sum_i \theta_i.
-    \]
-
-    Parameters
-    ----------
-    p : jnp.ndarray
-        Simplex points.
-
-        Shape
-        -----
-        (..., d+1)
-
-    theta : jnp.ndarray
-        Dirichlet parameters.
-
-        Shape
-        -----
-        (d+1,)
-
-    degree : int
-        Monomial degree used for the basis.
-
-    Returns
-    -------
-    values : jnp.ndarray
-
-        Shape
-        -----
-        (..., M)
-    """
-
-    def generator(x):
-        f = lambda y: simplex_monomial_basis(y, degree)
-        grad = jax.jacrev(f)(x)
-        hess = jax.jacfwd(jax.jacrev(f))(x)
-        Theta = jnp.sum(theta)
-        drift = theta - x * Theta
-        drift_term = jnp.einsum("...i,...i->...", drift, grad)
-        cov = jnp.diag(x) - jnp.outer(x, x)
-        diff_term = 0.5 * jnp.tensordot(hess, cov, axes=2)
-        return drift_term + diff_term
-
-    return jax.vmap(generator)(p)
+    return jax.vmap(_apply)(states_array, basis_vals)
 
 
 def reflecting_diffusion_generator(
     x: jnp.ndarray,
+    basis_fn: Callable[..., jnp.ndarray],
+    K: int,
     mu_fn: Callable[[jnp.ndarray], jnp.ndarray],
     sigma_fn: Callable[[jnp.ndarray], jnp.ndarray],
-    degree: int,
     L: float,
     U: float,
 ) -> jnp.ndarray:
-    """
-    Apply generator for reflecting diffusion on [L,U].
+    r"""
+    Evaluate the reflecting diffusion generator on the cosine basis.
 
     Mathematical intent
     ------------------
     \[
-        Lf = \mu(x)f'(x) + \frac{1}{2}\sigma(x)^2 f''(x),\quad f'(L)=f'(U)=0.
+        L\phi_k = \mu(x)\phi_k'(x) + \frac{1}{2}\sigma(x)^2\phi_k''(x),\quad \phi_k'(L)=\phi_k'(U)=0.
     \]
 
     Parameters
     ----------
     x : jnp.ndarray
-        Inputs on [L, U].
-
+        Evaluation points in [L, U].
         Shape
         -----
         (...,)
 
-    mu_fn : Callable[[jnp.ndarray], jnp.ndarray]
+    basis_fn : Callable
+        Basis evaluator for the interval (expects signature basis_fn(x, K, L, U)).
+
+    K : int
+        Highest cosine index.
+
+    mu_fn : Callable
         Drift function returning shape (...,).
 
-    sigma_fn : Callable[[jnp.ndarray], jnp.ndarray]
-        Diffusion amplitude function returning shape (...,).
-
-    degree : int
-        Number of cosine modes (excluding constant).
+    sigma_fn : Callable
+        Diffusion amplitude returning shape (...,).
 
     L : float
         Lower boundary.
@@ -349,52 +373,18 @@ def reflecting_diffusion_generator(
     Returns
     -------
     values : jnp.ndarray
-
         Shape
         -----
-        (..., degree+1)
+        (..., K+1)
     """
 
-    def generator(point):
-        def basis_fn(z):
-            return interval_cosine_basis(z, degree, L, U)
-
-        df = jax.jacrev(basis_fn)(point)
-        d2f = jax.jacfwd(jax.jacrev(basis_fn))(point)
-        mu = mu_fn(point)
-        sigma = sigma_fn(point)
-        drift_term = mu * df
-        diff_term = 0.5 * sigma**2 * d2f
-        return drift_term + diff_term
-
-    return jax.vmap(generator)(x)
-
-
-if __name__ == "__main__":
-    theta = jnp.array([0.0, jnp.pi / 2])
-    basis = interval_cosine_basis(jnp.linspace(0.0, 1.0, 5), 3, 0.0, 1.0)
-    assert basis.shape == (5, 4)
-
-    eigs = interval_laplacian_eigenvalues(3, 1.0, 0.0, 1.0)
-    assert eigs.shape == (4,)
-
-    s1_values = s1_fourier_basis(theta, 2)
-    assert s1_values.shape == (2, 5)
-    s1_gen = s1_laplace_beltrami(theta, 1.0, 2)
-    assert jnp.allclose(s1_gen[..., 0], 0.0)
-
-    simplex = simplex_monomial_basis(jnp.array([[0.6, 0.4]]), 2)
-    assert simplex.ndim == 2
-
-    theta_sim = jnp.array([1.0, 2.0])
-    wf = wright_fisher_generator(jnp.array([[0.8, 0.2]]), theta_sim, 2)
-    assert wf.shape[1] >= 1
-
-    def mu_fn(x):
-        return jnp.zeros_like(x)
-
-    def sigma_fn(x):
-        return jnp.ones_like(x)
-
-    refl = reflecting_diffusion_generator(jnp.array([0.25, 0.75]), mu_fn, sigma_fn, 2, 0.0, 1.0)
-    assert refl.shape == (2, 3)
+    points = jnp.asarray(x)
+    width = U - L
+    ks = jnp.arange(0, K + 1, dtype=points.dtype)
+    prefactor = ks * jnp.pi / width
+    angles = (points[..., None] - L) * prefactor
+    dphi = -2.0 / width * prefactor * jnp.sin(angles)
+    d2phi = -2.0 / width * prefactor**2 * jnp.cos(angles)
+    mu = mu_fn(points)[..., None]
+    sigma = sigma_fn(points)[..., None]
+    return mu * dphi + 0.5 * sigma**2 * d2phi
