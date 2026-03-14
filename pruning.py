@@ -147,8 +147,8 @@ def compute_branch_transitions_stable(
 
     spectral_exp = jnp.clip(
         spectral_exp,
-        a_min=1e-300,
-        a_max=1e300
+        min=1e-300,
+        max=1e300
     )
 
     transitions = jax.vmap(jnp.diag)(spectral_exp)

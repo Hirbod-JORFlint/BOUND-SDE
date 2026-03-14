@@ -59,8 +59,8 @@ def evaluate_basis_grid(
     states: jnp.ndarray,
     basis_fn: Callable
 ) -> jnp.ndarray:
-    """
-    Evaluate spectral basis functions over a set of states.
+    r"""
+    Evaluate the spectral basis \(\phi_i(x_n)\) over grid states.
 
     Parameters
     ----------
@@ -72,24 +72,16 @@ def evaluate_basis_grid(
         (N, d)
 
     basis_fn : Callable
-        Function mapping state -> basis vector.
+        Function returning \(\phi(x)\).
 
     Returns
     -------
     Phi : jnp.ndarray
-        Basis matrix.
+        Matrix of basis evaluations.
 
         Shape
         -----
         (N, M)
-
-    Notes
-    -----
-    Computes
-
-        Φ_{ni} = φ_i(x_n)
-
-    where φ_i are basis functions.
     """
 
     Phi = jax.vmap(basis_fn)(states)
@@ -106,28 +98,33 @@ def compute_generator_projection(
     basis_fn: Callable,
     generator_fn: Callable
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """
-    Compute Galerkin projection matrices.
+    r"""
+    Form the Galerkin projection of the generator onto the basis.
+
+    The matrices are computed as
+
+        G_{ij} = \frac{1}{N} \sum_n \phi_i(x_n) \phi_j(x_n),\quad
+        A_{ij} = \frac{1}{N} \sum_n \phi_i(x_n) (L\phi_j)(x_n).
 
     Parameters
     ----------
     states : jnp.ndarray
-        Quadrature or Monte-Carlo sample points.
+        Sample points.
 
         Shape
         -----
         (N, d)
 
     basis_fn : Callable
-        Basis evaluation function.
+        Spectral basis evaluator.
 
     generator_fn : Callable
-        Generator operator.
+        Infinitesimal generator.
 
     Returns
     -------
     A : jnp.ndarray
-        Generator matrix.
+        Generator projection.
 
         Shape
         -----
@@ -141,38 +138,18 @@ def compute_generator_projection(
         (M, M)
 
     Phi : jnp.ndarray
-        Basis evaluations.
+        Basis matrix.
 
         Shape
         -----
         (N, M)
-
-    Notes
-    -----
-
-    We approximate inner products via Monte Carlo:
-
-        G_ij = (1/N) Σ_n φ_i(x_n) φ_j(x_n)
-
-        A_ij = (1/N) Σ_n φ_i(x_n) (L φ_j)(x_n)
-
-    where L is the infinitesimal generator.
     """
 
-    # Evaluate basis
-    Phi = evaluate_basis_grid(states, basis_fn)  # (N, M)
-
-    # Apply generator
-    Lphi = jax.vmap(generator_fn)(states)  # (N, M)
-
+    Phi = evaluate_basis_grid(states, basis_fn)
+    Lphi = jax.vmap(generator_fn)(states)
     N = states.shape[0]
-
-    # Gram matrix
     G = (Phi.T @ Phi) / N
-
-    # Generator projection
     A = (Phi.T @ Lphi) / N
-
     return A, G, Phi
 
 
@@ -185,10 +162,8 @@ def solve_spectral_decomposition(
     G: jnp.ndarray,
     reg: float = 1e-8
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    """
-    Solve the generalized eigenvalue problem.
-
-        A v = λ G v
+    r"""
+    Solve the generalized eigensystem \(A v = \lambda G v\).
 
     Parameters
     ----------
@@ -207,71 +182,33 @@ def solve_spectral_decomposition(
         (M, M)
 
     reg : float
-        Diagonal regularization.
+        Regularization added to \(G\)'s diagonal.
 
     Returns
     -------
     eigenvalues : jnp.ndarray
-        Spectral eigenvalues.
+        Spectral eigenvalues \(\lambda_k\).
 
         Shape
         -----
         (M,)
 
     eigenvectors : jnp.ndarray
-        Eigenvectors in basis coordinates.
+        Basis coefficients.
 
         Shape
         -----
         (M, M)
-
-    Notes
-    -----
-
-    We convert
-
-        A v = λ G v
-
-    into a standard symmetric problem.
-
-    Let
-
-        G = L L^T
-
-    then
-
-        B = L^{-1} A L^{-T}
-
-    Solve
-
-        B u = λ u
-
-    Recover
-
-        v = L^{-T} u
     """
 
     M = G.shape[0]
-
-    # Regularize Gram matrix
     G_reg = G + reg * jnp.eye(M)
-
-    # Cholesky
     L = jnp.linalg.cholesky(G_reg)
-
-    # Compute transformed operator
     Linv = jsp.linalg.solve_triangular(L, jnp.eye(M), lower=True)
-
     B = Linv @ A @ Linv.T
-
-    # Symmetrize (numerical safety)
     B = 0.5 * (B + B.T)
-
     eigenvalues, U = jnp.linalg.eigh(B)
-
-    # Recover eigenvectors
     V = Linv.T @ U
-
     return eigenvalues, V
 
 
@@ -283,8 +220,8 @@ def construct_eigenfunctions(
     Phi: jnp.ndarray,
     eigenvectors: jnp.ndarray
 ) -> jnp.ndarray:
-    """
-    Construct eigenfunctions evaluated on grid.
+    r"""
+    Reconstruct eigenfunctions \(\psi_k(x) = \sum_j v_{jk} \phi_j(x)\).
 
     Parameters
     ----------
@@ -305,18 +242,11 @@ def construct_eigenfunctions(
     Returns
     -------
     Psi : jnp.ndarray
-        Eigenfunctions evaluated on grid.
+        Eigenfunctions evaluated at the sample grid.
 
         Shape
         -----
         (N, M)
-
-    Notes
-    -----
-
-    Compute
-
-        ψ_k(x_n) = Σ_j v_{jk} φ_j(x_n)
     """
 
     Psi = Phi @ eigenvectors
@@ -334,20 +264,22 @@ def spectral_transition_kernel(
     eigenvalues: jnp.ndarray,
     t: float
 ) -> jnp.ndarray:
-    """
-    Evaluate spectral transition density approximation.
+    r"""
+    Approximate the transition kernel
+
+        \(p_t(x,y) ≈ \sum_k e^{\lambda_k t} \psi_k(x) \psi_k(y)\).
 
     Parameters
     ----------
     Psi_x : jnp.ndarray
-        Eigenfunctions at x locations.
+        Eigenfunctions at source locations.
 
         Shape
         -----
         (Nx, M)
 
     Psi_y : jnp.ndarray
-        Eigenfunctions at y locations.
+        Eigenfunctions at target locations.
 
         Shape
         -----
@@ -361,31 +293,21 @@ def spectral_transition_kernel(
         (M,)
 
     t : float
-        Time parameter.
+        Time argument.
 
     Returns
     -------
     P : jnp.ndarray
-        Transition kernel matrix.
+        Approximated transition matrix.
 
         Shape
         -----
         (Nx, Ny)
-
-    Notes
-    -----
-
-    Using expansion
-
-        p_t(x,y) ≈ Σ_k exp(λ_k t) ψ_k(x) ψ_k(y)
     """
 
     exp_term = jnp.exp(eigenvalues * t)
-
     weighted = Psi_x * exp_term
-
     P = weighted @ Psi_y.T
-
     return P
 
 
@@ -398,8 +320,8 @@ def branch_transition_matrix(
     eigenvectors: jnp.ndarray,
     branch_length: float
 ) -> jnp.ndarray:
-    """
-    Construct transition operator along a tree branch.
+    r"""
+    Build the branch operator \(T = V \exp(\Lambda t) V^T\).
 
     Parameters
     ----------
@@ -411,46 +333,28 @@ def branch_transition_matrix(
         (M,)
 
     eigenvectors : jnp.ndarray
-        Spectral eigenvectors.
+        Basis coefficients.
 
         Shape
         -----
         (M, M)
 
     branch_length : float
-        Evolutionary time.
+        Evolutionary time duration.
 
     Returns
     -------
     T : jnp.ndarray
-        Branch transition matrix.
+        Spectral transition matrix.
 
         Shape
         -----
         (M, M)
-
-    Notes
-    -----
-
-    Using semigroup representation
-
-        T(t) = V exp(Λ t) V^{-1}
-
-    where
-
-        Λ = diag(λ_k)
-
-    For orthonormal bases
-
-        V^{-1} = V^T
     """
 
     exp_diag = jnp.exp(eigenvalues * branch_length)
-
     D = jnp.diag(exp_diag)
-
     T = eigenvectors @ D @ eigenvectors.T
-
     return T
 
 

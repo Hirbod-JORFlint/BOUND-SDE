@@ -1,5 +1,5 @@
 # manifolds.py
-"""
+r"""
 Manifold utilities for S^1 and the probability simplex Δ^d.
 
 This file provides:
@@ -40,26 +40,37 @@ from kernels import (
 
 ### --- S^1: angle utilities --- ###
 
-def wrap_angle(theta: jnp.ndarray) -> jnp.ndarray:
-    """
-    Wrap angle(s) to the interval [0, 2π).
+def s1_project(theta: jnp.ndarray) -> jnp.ndarray:
+    r"""
+    Project angles to the principal domain \([0, 2\pi)\) on \(S^1\).
 
     Parameters
     ----------
-    theta
-        (...,) angle(s) in radians (can be any real number).
+    theta : jnp.ndarray
+        Unbounded angles in radians.
+
+        Shape
+        -----
+        (...,)
 
     Returns
     -------
-    wrapped
-        (...,) angles in [0, 2π).
+    wrapped : jnp.ndarray
+        Angles wrapped to \([0, 2\pi)\).
+
+        Shape
+        -----
+        (...,)
     """
     two_pi = 2.0 * jnp.pi
     return jnp.mod(theta, two_pi)
 
 
+wrap_angle = s1_project
+
+
 def s1_angle_difference(theta_a: jnp.ndarray, theta_b: jnp.ndarray) -> jnp.ndarray:
-    """
+    r"""
     Minimal oriented angular difference (log map on S^1):
     returns the unique value in (-π, π] equal to theta_b - theta_a modulo 2π.
 
@@ -142,6 +153,37 @@ def s1_metric(theta: jnp.ndarray) -> jnp.ndarray:
 
 ### --- Simplex Δ^d: Fisher metric, projections, retraction, distances --- ###
 
+def simplex_project(p: jnp.ndarray, eps: float = 1e-12) -> jnp.ndarray:
+    r"""
+    Project an arbitrary vector back into the probability simplex Δ^d.
+
+    Parameters
+    ----------
+    p : jnp.ndarray
+        Input vectors that may not sum to one or may contain small/negative entries.
+
+        Shape
+        -----
+        (..., d+1)
+
+    eps : float
+        Minimal value to enforce positivity.
+
+    Returns
+    -------
+    projected : jnp.ndarray
+        Probabilities satisfying \(p_i \geq \varepsilon\) and \(\sum_i p_i = 1\).
+
+        Shape
+        -----
+        (..., d+1)
+    """
+
+    clipped = jnp.clip(p, min=eps)
+    norm = jnp.sum(clipped, axis=-1, keepdims=True)
+    return clipped / norm
+
+
 def simplex_project_tangent(v: jnp.ndarray) -> jnp.ndarray:
     """
     Project an ambient vector v ∈ R^{d+1} to the tangent space of the simplex at any point:
@@ -180,7 +222,7 @@ def fisher_inner_product(p: jnp.ndarray, u: jnp.ndarray, v: jnp.ndarray, eps: fl
     -------
     ip : (...) scalar inner product values
     """
-    p_safe = jnp.clip(p, a_min=eps)
+    p_safe = jnp.clip(p, min=eps)
     return jnp.sum((u * v) / p_safe, axis=-1)
 
 
@@ -199,7 +241,7 @@ def simplex_fisher_metric_matrix(p: jnp.ndarray, eps: float = 1e-12) -> jnp.ndar
     -------
     G : (..., d+1, d+1) diagonal matrices (may be singular when restricted to ambient space).
     """
-    p_safe = jnp.clip(p, a_min=eps)
+    p_safe = jnp.clip(p, min=eps)
     inv = 1.0 / p_safe                                # (..., d+1)
     # form diagonal matrices
     G = jnp.einsum('...i,...j->...ij', inv, jnp.eye(p.shape[-1]))
@@ -225,7 +267,7 @@ def simplex_retraction(p: jnp.ndarray, v: jnp.ndarray, eps: float = 1e-12) -> jn
     -------
     q : (..., d+1) new probability vector in simplex interior
     """
-    p_safe = jnp.clip(p, a_min=eps)
+    p_safe = jnp.clip(p, min=eps)
     # Compute unnormalized q
     q = p_safe * jnp.exp(v)
     q_sum = jnp.sum(q, axis=-1, keepdims=True)
@@ -250,7 +292,7 @@ def simplex_hellinger_distance(p: jnp.ndarray, q: jnp.ndarray, eps: float = 1e-1
     dist : (...) distances in [0, 2π]
     """
     # inner product in the square-root embedding:
-    root_inner = jnp.sum(jnp.sqrt(jnp.clip(p, a_min=eps) * jnp.clip(q, a_min=eps)), axis=-1)
+    root_inner = jnp.sum(jnp.sqrt(jnp.clip(p, min=eps) * jnp.clip(q, min=eps)), axis=-1)
     root_inner_clipped = jnp.clip(root_inner, -1.0, 1.0)
     return 2.0 * jnp.arccos(root_inner_clipped)
 
@@ -268,7 +310,7 @@ def simplex_to_sphere(p: jnp.ndarray, eps: float = 1e-12) -> jnp.ndarray:
     -------
     s : (..., d+1) unit vectors (norm ≈ 1)
     """
-    s = jnp.sqrt(jnp.clip(p, a_min=eps))
+    s = jnp.sqrt(jnp.clip(p, min=eps))
     # Normalize numerically to unit length
     s = s / jnp.linalg.norm(s, axis=-1, keepdims=True)
     return s
@@ -300,49 +342,39 @@ def sphere_to_simplex(s: jnp.ndarray, eps: float = 1e-12) -> jnp.ndarray:
 # S1 Laplace–Beltrami Operator
 # ------------------------------------------------------------
 
-def s1_laplace_beltrami_operator(
-    theta: jnp.ndarray,
-    f_fn
+def s1_laplace_beltrami(
+    f_fn: Callable[[jnp.ndarray], jnp.ndarray],
+    theta: jnp.ndarray
 ) -> jnp.ndarray:
-    """
-    Compute Laplace–Beltrami operator on S¹.
-
-    Mathematical definition
-    -----------------------
-
-    On the unit circle with coordinate θ,
-
-        Δ_{S¹} f = ∂²f / ∂θ²
+    r"""
+    Apply the Laplace–Beltrami operator \(\Delta_{S^1} f = \partial^2_\theta f\).
 
     Parameters
     ----------
+    f_fn : Callable
+        Scalar-valued function \(f: S^1 \to \mathbb{R}\).
+
     theta : jnp.ndarray
+        Angles at which to evaluate the Laplacian.
 
         Shape
         -----
         (...,)
-
-    f_fn : Callable
-        Function mapping θ -> scalar.
 
     Returns
     -------
     lap : jnp.ndarray
+        Second derivative \(\partial^2_\theta f\).
 
         Shape
         -----
         (...,)
     """
 
-    def single_point(t):
+    grad_fn = jax.grad(f_fn)
+    lap_fn = jax.grad(grad_fn)
 
-        df = jax.grad(f_fn)(t)
-
-        d2f = jax.grad(lambda z: jax.grad(f_fn)(z))(t)
-
-        return d2f
-
-    return jax.vmap(single_point)(theta)
+    return jax.vmap(lap_fn)(theta)
 
 
 # ------------------------------------------------------------
@@ -350,29 +382,28 @@ def s1_laplace_beltrami_operator(
 # ------------------------------------------------------------
 
 def s1_gradient(
-    theta: jnp.ndarray,
-    f_fn
+    f_fn: Callable[[jnp.ndarray], jnp.ndarray],
+    theta: jnp.ndarray
 ) -> jnp.ndarray:
-    """
-    Compute intrinsic gradient on S¹.
-
-    On S¹ the gradient reduces to
-
-        ∇f = df/dθ
+    r"""
+    Compute the intrinsic gradient \(\partial_\theta f\) on \(S^1\).
 
     Parameters
     ----------
+    f_fn : Callable
+        Scalar-valued function \(f: S^1 \to \mathbb{R}\).
+
     theta : jnp.ndarray
+        Evaluation angles in radians.
 
         Shape
         -----
         (...,)
 
-    f_fn : Callable
-
     Returns
     -------
     grad : jnp.ndarray
+        Angular derivative \(\partial_\theta f\).
 
         Shape
         -----
@@ -389,35 +420,34 @@ def s1_gradient(
 # ------------------------------------------------------------
 
 def simplex_fisher_metric(
-    p: jnp.ndarray
+    p: jnp.ndarray,
 ) -> jnp.ndarray:
-    """
-    Compute Fisher information metric on simplex.
-
-    Metric definition
-
-        g_ij = δ_ij / p_i
+    r"""
+    Return the Fisher information metric \(g_{ij} = \delta_{ij} / p_i\).
 
     Parameters
     ----------
     p : jnp.ndarray
+        Probability vectors lying in the interior of Δ^d.
 
         Shape
         -----
-        (..., d)
+        (..., d+1)
 
     Returns
     -------
     G : jnp.ndarray
+        Diagonal Fisher metric matrices.
 
         Shape
         -----
-        (..., d, d)
+        (..., d+1, d+1)
     """
 
-    inv_p = 1.0 / p
-
-    return jnp.einsum("...i,ij->...ij", inv_p, jnp.eye(p.shape[-1]))
+    p_safe = jnp.clip(p, min=1e-12)
+    inv_p = 1.0 / p_safe
+    size = p.shape[-1]
+    return jnp.einsum("...i,ij->...ij", inv_p, jnp.eye(size))
 
 
 # ------------------------------------------------------------
@@ -474,51 +504,47 @@ def simplex_riemannian_gradient(
 # ------------------------------------------------------------
 
 def simplex_laplace_beltrami(
+    f_fn: Callable[[jnp.ndarray], jnp.ndarray],
     p: jnp.ndarray,
-    f_fn
 ) -> jnp.ndarray:
-    """
-    Compute Laplace–Beltrami operator on simplex.
+    r"""
+    Laplace–Beltrami on the simplex via the Fisher metric.
 
-    Mathematical expression
+    The operator reduces to
 
-        Δf =
-        (1 / √|g|)
-        ∂_i ( √|g| g^{ij} ∂_j f )
-
-    Using Fisher metric.
+        \(\Delta f = \sum_i \left(p_i \partial_{ii} f + \frac{1}{2p_i} \partial_i f \right)\).
 
     Parameters
     ----------
+    f_fn : Callable
+        Scalar function defined on the simplex.
+
     p : jnp.ndarray
+        Simplex points with \(p_i > 0\).
 
         Shape
         -----
-        (..., d)
-
-    f_fn : Callable
+        (..., d+1)
 
     Returns
     -------
     lap : jnp.ndarray
+        Laplace–Beltrami evaluation.
 
         Shape
         -----
         (...,)
     """
 
+    grad_fn = jax.grad(f_fn)
+    hess_fn = jax.jacfwd(grad_fn)
+
     def single_point(x):
-
-        grad = jax.grad(f_fn)(x)
-
-        hess = jax.jacfwd(jax.grad(f_fn))(x)
-
-        G = simplex_fisher_metric(x)
-
-        G_inv = jnp.linalg.inv(G)
-
-        term = jnp.trace(G_inv @ hess)
-
+        x_safe = jnp.clip(x, min=1e-12)
+        grad = grad_fn(x_safe)
+        hess = hess_fn(x_safe)
+        diag_hess = jnp.diagonal(hess)
+        term = jnp.sum(x_safe * diag_hess + 0.5 * grad / x_safe)
         return term
 
     return jax.vmap(single_point)(p)
@@ -956,7 +982,7 @@ def create_simplex_manifold(dplus1: int, concentration: float = 1.0) -> Manifold
 
         theta = _pad_to_length(params.boundary_params, dplus1)
 
-        theta = jnp.clip(theta, a_min=1e-6)
+        theta = jnp.clip(theta, min=1e-6)
 
         basis_fn = lambda x: basis(x, spectral_dim)
 
@@ -976,7 +1002,7 @@ def create_simplex_manifold(dplus1: int, concentration: float = 1.0) -> Manifold
             Shape (..., dplus1)
         """
 
-        clipped = jnp.clip(x, a_min=1e-12)
+        clipped = jnp.clip(x, min=1e-12)
 
         summed = jnp.sum(clipped, axis=-1, keepdims=True)
 

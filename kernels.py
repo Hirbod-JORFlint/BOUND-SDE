@@ -388,3 +388,114 @@ def reflecting_diffusion_generator(
     mu = mu_fn(points)[..., None]
     sigma = sigma_fn(points)[..., None]
     return mu * dphi + 0.5 * sigma**2 * d2phi
+
+
+def s1_wrapped_ou_generator(
+    theta: jnp.ndarray,
+    basis_fn: Callable[[jnp.ndarray, int], jnp.ndarray],
+    K: int,
+    kappa: float,
+    preferred: float,
+    sigma: float,
+) -> jnp.ndarray:
+    r"""
+    Wrapped Ornstein–Uhlenbeck generator on \(S^1\).
+
+    The generator is
+
+        \(L f = -\kappa (\theta - \theta^*) f' + \frac{1}{2}\sigma^2 f''\).
+
+    Parameters
+    ----------
+    theta : jnp.ndarray
+        Angles in radians.
+
+        Shape
+        -----
+        (...,)
+
+    basis_fn : Callable
+        Fourier basis evaluator.
+
+    K : int
+        Highest frequency.
+
+    kappa : float
+        Reversion strength.
+
+    preferred : float
+        Preferred angle.
+
+    sigma : float
+        Diffusion amplitude.
+
+    Returns
+    -------
+    values : jnp.ndarray
+        Generator applied to the basis.
+
+        Shape
+        -----
+        (..., 2K+1)
+    """
+
+    def single(point):
+        phi_fn = lambda z: basis_fn(z, K)
+        grad = jax.jacrev(phi_fn)(point)
+        hess = jax.jacfwd(jax.jacrev(phi_fn))(point)
+        drift = -kappa * (point - preferred)
+        return drift * grad + 0.5 * sigma**2 * hess
+
+    return jax.vmap(single)(theta)
+
+
+def wright_fisher_generator(
+    p: jnp.ndarray,
+    basis_fn: Callable[[jnp.ndarray], jnp.ndarray],
+    theta: jnp.ndarray,
+) -> jnp.ndarray:
+    r"""
+    Wright–Fisher generator applied to simplex basis.
+
+    Parameters
+    ----------
+    p : jnp.ndarray
+        Simplex points.
+
+        Shape
+        -----
+        (..., d+1)
+
+    basis_fn : Callable
+        Basis evaluator returning shape (..., M).
+
+    theta : jnp.ndarray
+        Dirichlet concentration.
+
+        Shape
+        -----
+        (d+1,)
+
+    Returns
+    -------
+    values : jnp.ndarray
+        Generator acting on the basis.
+
+        Shape
+        -----
+        (..., M)
+    """
+
+    Theta = jnp.sum(theta)
+
+    def single(point):
+        phi_fn = lambda z: basis_fn(z)
+        grad = jax.jacrev(phi_fn)(point)
+        hess = jax.jacfwd(jax.jacrev(phi_fn))(point)
+        drift = theta - point * Theta
+        drift_term = jnp.einsum("mi,i->m", grad, drift)
+        cov = jnp.diag(point) - jnp.outer(point, point)
+        diff_term = 0.5 * jnp.einsum("mij,ij->m", hess, cov)
+        return drift_term + diff_term
+
+    return jax.vmap(single)(p)
