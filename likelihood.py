@@ -509,3 +509,184 @@ def vectorized_neg_loglik(
 # ============================================================
 
 grad_vectorized_neg_loglik = jax.grad(vectorized_neg_loglik)
+
+# ============================================================
+# Batched Tree Likelihood
+# ============================================================
+
+def likelihood_batch(
+    params,
+    trees,
+    node_loglik_batch,
+    manifold,
+    spectral_dim
+):
+    """
+    Evaluate log-likelihood for multiple phylogenetic trees.
+
+    Mathematical definition
+    -----------------------
+
+    For datasets D_k
+
+        log L_k(θ)
+
+    the batch likelihood vector is
+
+        L(θ) =
+        [ log L_1(θ), ..., log L_K(θ) ]
+
+    Parameters
+    ----------
+    params : ModelParams
+
+    trees : TreeData
+        Batched tree structure.
+
+    node_loglik_batch : jnp.ndarray
+
+        Shape
+        -----
+        (K, N, M)
+
+        Initial node likelihood vectors
+        for each dataset.
+
+    manifold : object
+
+    spectral_dim : int
+
+    Returns
+    -------
+    loglik_batch : jnp.ndarray
+
+        Shape
+        -----
+        (K,)
+    """
+
+    from likelihood import likelihood_objective
+
+    def single_likelihood(node_loglik):
+
+        return likelihood_objective(
+            params,
+            trees,
+            node_loglik,
+            manifold,
+            spectral_dim
+        )
+
+    return jax.vmap(single_likelihood)(node_loglik_batch)
+
+# ============================================================
+# Summed Batch Likelihood
+# ============================================================
+
+def likelihood_total(
+    params,
+    trees,
+    node_loglik_batch,
+    manifold,
+    spectral_dim
+):
+    """
+    Compute total log-likelihood across datasets.
+
+    Mathematical definition
+    -----------------------
+
+        log L_total(θ)
+        =
+        Σ_k log L_k(θ)
+
+    Returns
+    -------
+    loglik : float
+    """
+
+    logliks = likelihood_batch(
+        params,
+        trees,
+        node_loglik_batch,
+        manifold,
+        spectral_dim
+    )
+
+    return jnp.sum(logliks)
+
+# ============================================================
+# Batched Negative Log-Likelihood
+# ============================================================
+
+def neg_loglik_batch(
+    params,
+    trees,
+    node_loglik_batch,
+    manifold,
+    spectral_dim
+):
+    """
+    Negative total log-likelihood for batch.
+
+    Returns
+    -------
+    value : float
+    """
+
+    return -likelihood_total(
+        params,
+        trees,
+        node_loglik_batch,
+        manifold,
+        spectral_dim
+    )
+
+# ============================================================
+# Vectorized Batch Objective
+# ============================================================
+
+def vectorized_neg_loglik_batch(
+    vec,
+    shape,
+    trees,
+    node_loglik_batch,
+    manifold,
+    spectral_dim
+):
+    """
+    Negative log-likelihood for batched datasets
+    using flattened parameter vector.
+
+    Parameters
+    ----------
+    vec : jnp.ndarray
+
+        Shape
+        -----
+        (D,)
+
+    Returns
+    -------
+    value : float
+    """
+
+    from likelihood import transform_params
+
+    params = transform_params(vec, shape)
+
+    return neg_loglik_batch(
+        params,
+        trees,
+        node_loglik_batch,
+        manifold,
+        spectral_dim
+    )
+
+# ============================================================
+# Gradient for Batched Optimization
+# ============================================================
+
+grad_vectorized_neg_loglik_batch = jax.grad(
+    vectorized_neg_loglik_batch
+)
