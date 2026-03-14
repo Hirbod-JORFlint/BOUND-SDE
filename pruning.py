@@ -1174,3 +1174,193 @@ def run_pruning_scan(
     )
 
     return final_state
+
+# ============================================================
+# Compute Root Likelihood
+# ============================================================
+
+def compute_root_loglik(
+    node_loglik: jnp.ndarray,
+    scales: jnp.ndarray,
+    root_index: int,
+    root_prior: jnp.ndarray
+) -> jnp.ndarray:
+    """
+    Compute the total tree log-likelihood from root state.
+
+    Mathematical definition
+    -----------------------
+
+    Let the normalized root likelihood vector be
+
+        L̃_r(k)
+
+    and root prior distribution
+
+        π(k)
+
+    The tree likelihood is
+
+        log L_tree
+        =
+        log Σ_k exp( L̃_r(k) + log π(k) )
+        +
+        Σ_i s_i
+
+    where s_i are scaling constants accumulated
+    during pruning normalization.
+
+    Parameters
+    ----------
+    node_loglik : jnp.ndarray
+
+        Shape
+        -----
+        (N, M)
+
+        Normalized node likelihood vectors.
+
+    scales : jnp.ndarray
+
+        Shape
+        -----
+        (N,)
+
+        Log-normalization constants accumulated
+        during pruning.
+
+    root_index : int
+
+        Index of root node.
+
+    root_prior : jnp.ndarray
+
+        Shape
+        -----
+        (M,)
+
+        Prior distribution over spectral states.
+
+        Must satisfy
+
+            Σ_k π(k) = 1
+
+    Returns
+    -------
+    loglik : float
+
+        Log-likelihood of the phylogenetic tree
+        under the constrained SDE model.
+    """
+
+    root_vec = node_loglik[root_index]
+
+    log_prior = jnp.log(jnp.clip(root_prior, 1e-30))
+
+    root_term = jsp.special.logsumexp(
+        root_vec + log_prior
+    )
+
+    scale_sum = jnp.sum(scales)
+
+    loglik = root_term + scale_sum
+
+    return loglik
+
+# ============================================================
+# Complete Tree Likelihood
+# ============================================================
+
+def compute_tree_loglik(
+    postorder_nodes: jnp.ndarray,
+    node_loglik: jnp.ndarray,
+    parent_index: jnp.ndarray,
+    parent_branch: jnp.ndarray,
+    branch_lengths: jnp.ndarray,
+    eigenvalues: jnp.ndarray,
+    eigenvectors: jnp.ndarray,
+    inv_eigenvectors: jnp.ndarray,
+    root_index: int,
+    root_prior: jnp.ndarray
+) -> jnp.ndarray:
+    """
+    Compute the full phylogenetic log-likelihood.
+
+    This function performs
+
+    1. Boundary-propagating pruning traversal
+    2. Root likelihood evaluation
+
+    Parameters
+    ----------
+    postorder_nodes : jnp.ndarray
+        Shape
+        -----
+        (N,)
+
+    node_loglik : jnp.ndarray
+        Shape
+        -----
+        (N, M)
+
+    parent_index : jnp.ndarray
+        Shape
+        -----
+        (N,)
+
+    parent_branch : jnp.ndarray
+        Shape
+        -----
+        (N,)
+
+    branch_lengths : jnp.ndarray
+        Shape
+        -----
+        (B,)
+
+    eigenvalues : jnp.ndarray
+        Shape
+        -----
+        (M,)
+
+    eigenvectors : jnp.ndarray
+        Shape
+        -----
+        (M, M)
+
+    inv_eigenvectors : jnp.ndarray
+        Shape
+        -----
+        (M, M)
+
+    root_index : int
+
+    root_prior : jnp.ndarray
+        Shape
+        -----
+        (M,)
+
+    Returns
+    -------
+    loglik : float
+    """
+
+    state = run_pruning_scan(
+        postorder_nodes,
+        node_loglik,
+        parent_index,
+        parent_branch,
+        branch_lengths,
+        eigenvalues,
+        eigenvectors,
+        inv_eigenvectors
+    )
+
+    loglik = compute_root_loglik(
+        state.node_loglik,
+        state.scales,
+        root_index,
+        root_prior
+    )
+
+    return loglik

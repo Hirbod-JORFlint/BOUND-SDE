@@ -23,5 +23,5 @@ STANDARDS: * O(N) efficiency via vectorization. All math in comments must use La
 
     main.py: [Not Started]
 
-CURRENT PROGRESS: Part 16 of 30.
+CURRENT PROGRESS: Part 17 of 30.
 ACTIVE TARGET: File [Number]: [Name].
